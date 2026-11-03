@@ -80,6 +80,12 @@
 **Intel 那两个 DLL 是什么？**
 只有用 XMX 后端才需要，安装时会顺手补齐。游戏更新或 Steam 校验会覆盖它们，之后重装一次就好。
 
+## 许可
+
+MIT。随便用、改、分发，保留版权声明即可。
+
+上游 [MFGAdaUnlock-RenoDx](https://github.com/mavismmg/MFGAdaUnlock-RenoDx) 同为 MIT，无冲突。
+
 ## 致谢
 
 解锁核心来自 [mavismmg/MFGAdaUnlock-RenoDx](https://github.com/mavismmg/MFGAdaUnlock-RenoDx)，
