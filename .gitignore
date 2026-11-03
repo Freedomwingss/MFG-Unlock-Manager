@@ -1,0 +1,24 @@
+# 构建产物
+build/
+build2/
+dist/
+*.spec
+*.exe
+
+# 运行时数据（插件缓存 / ReShade 宿主 / 备份 / 图标 / 配置）
+data/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# 本机构建产物
+webhost/
+host/bin/
+host/obj/
+
+# 个人截图
+preview.png
+preview.bmp
+full.bmp
