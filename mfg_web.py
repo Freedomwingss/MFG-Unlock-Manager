@@ -1105,6 +1105,14 @@ def build_report(game):
         tips.append("游戏未自带 DLSS-G，点「一键安装」会自动放入 310.x")
     if parsed and parsed[0][3]["init"] and not parsed[0][3]["addon_loaded"] and has_addon:
         tips.append("ReShade 起来了但插件没加载：先把 ReShade 更新到最新，再确认 addon64 未被杀软隔离")
+    all_txt = "\n".join(t[2] for t in parsed)
+    if "xmx execute failed: -4" in all_txt or "XeFG returned an error" in all_txt:
+        tips.append("XMX 报 XeFG 错误（-4）：把游戏内「超分输出分辨率」改成 100%，"
+                    "然后完全退出重进。自动 / 75% 这类非整档会让深度图与运动矢量的"
+                    "尺寸对不上，Intel 的模型每帧都拒绝")
+    if "architecture gate refused" in all_txt and game.verdict == core.V_FULL:
+        tips.append("出现 architecture gate refused：DLSS-G 的架构门被拒，"
+                    "倍率通常仍可用；若倍率异常，把 DLSS-G 更新到 310.x 再试")
     if not tips:
         tips.append("未发现需要处理的问题")
     for t in tips:

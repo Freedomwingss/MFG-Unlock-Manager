@@ -527,7 +527,7 @@ function renderDetail() {
       <tr><td>XeSS 帧生成</td><td class="${g.xess ? "v-ok" : "v-mut"}">${g.xess || "未找到"}</td></tr>
       <tr><td data-tip="XMX 是 1.8 新增模式：Intel 多帧模型跑在 DLSS-G 的呈现管线里<br>Intel 的 libxess_fg + libxell 必须放在 <b>exe 所在目录</b>，别处的副本插件不认">XMX 模式</td><td class="${g.xmxReady ? "v-ok" : "v-warn"}">${
         g.verdict === "full"
-          ? (g.xmxReady ? "就绪，面板里选「XeMFG via DLSS-G」" : "缺 Intel 文件，点「一键安装」自动补齐（游戏内有合适版本时）")
+          ? (g.xmxReady ? "就绪，面板里选「XeMFG via DLSS-G」；超分输出分辨率要设 100%" : "缺 Intel 文件，点「一键安装」自动补齐（游戏内有合适版本时）")
           : (g.verdict === "xemfg" ? "该游戏走 XeMFG 后端" : "不适用")
       }</td></tr>
       <tr><td>主程序</td><td class="${g.arch === "x64" ? "v-ok" : "v-bad"}">${g.arch || "未知"}</td></tr>
