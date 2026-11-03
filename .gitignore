@@ -22,3 +22,6 @@ host/obj/
 preview.png
 preview.bmp
 full.bmp
+
+# 本地草稿（不发布）
+docs/ISSUE_DRAFT.md
