@@ -31,7 +31,7 @@
 
 简单说：**省事，而且更强**。
 
-> 支持 RTX 20 / 30 / 40 系。40 系解锁 3×–6×，20 / 30 系走兼容后端。
+> 支持 RTX 20 / 30 / 40 系。40 系解锁 3×–6×；20 / 30 系走 XeMFG 兼容后端，1.8.3 起也可尝试 XMX。
 
 ## 三步搞定
 
@@ -95,4 +95,4 @@ MIT。随便用、改、分发，保留版权声明即可。
 
 ---
 
-<sub>v1.0.4 · 技术细节见 [docs/TECHNICAL.md](docs/TECHNICAL.md)</sub>
+<sub>v1.0.5 · 技术细节见 [docs/TECHNICAL.md](docs/TECHNICAL.md)</sub>

@@ -1,8 +1,8 @@
 # UTF-8
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(1, 0, 4, 0),
-    prodvers=(1, 0, 4, 0),
+    filevers=(1, 0, 5, 0),
+    prodvers=(1, 0, 5, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -15,12 +15,12 @@ VSVersionInfo(
       StringTable('080404b0', [
         StringStruct('CompanyName', 'MFG Unlock Manager'),
         StringStruct('FileDescription', '多帧生成解锁管理器'),
-        StringStruct('FileVersion', '1.0.4'),
+        StringStruct('FileVersion', '1.0.5'),
         StringStruct('InternalName', 'MFGUnlockManager'),
         StringStruct('LegalCopyright', ''),
         StringStruct('OriginalFilename', 'MFGUnlockManager.exe'),
         StringStruct('ProductName', 'MFG Unlock Manager'),
-        StringStruct('ProductVersion', '1.0.4')
+        StringStruct('ProductVersion', '1.0.5')
       ])
     ]),
     VarFileInfo([VarStruct('Translation', [2052, 1200])])

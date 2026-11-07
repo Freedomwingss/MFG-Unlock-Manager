@@ -785,7 +785,8 @@ def judge(gpu, game):
     if fam in ("ampere", "turing"):
         if has_g or has_sl or has_x:
             game.verdict = V_XEMFG
-            game.reason = "该卡仅支持 XeMFG 后端（2x–6x），需面板内装 Intel 运行时"
+            game.reason = ("20/30 系走 XeMFG 后端（2x–6x），需面板内装 Intel 运行时；"
+                           "1.8.3 起也能通过游戏自己的 DLSS-FG 菜单尝试 XMX（实验性）")
         else:
             game.verdict = V_NO
             game.reason = "未检测到 DLSS / XeSS 帧生成组件"
