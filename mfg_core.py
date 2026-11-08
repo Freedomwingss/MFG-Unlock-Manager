@@ -302,6 +302,7 @@ class Game:
     reason: str = ""
     verified: str = ""                              # "" / "dlssg" / "xemfg"
     xmx_ready: bool = False                         # Intel 运行时文件是否满足 XMX
+    extra_url: str = ""                             # 需要额外下载组件时的地址
 
     @property
     def installed(self):
@@ -731,6 +732,27 @@ def place_intel_files(game):
             else "复制完成但校验未通过")
 
 
+ELDENRING_ADDON = "https://github.com/masonpetrosky/EldenRingDLSS/releases"
+
+
+def _eldenring_extras(game):
+    """艾尔登法环需要额外的 DLSS addon 或 ERSS mod 才喂得上 XeMFG"""
+    found = set()
+    for d in (game.exe_dir, game.path):
+        if not d or not os.path.isdir(d):
+            continue
+        try:
+            for f in os.listdir(d):
+                low = f.lower()
+                if "eldenringdlss" in low and low.endswith(".addon64"):
+                    found.add("EldenRingDLSS")
+                if low == "zzz_erss.dll":
+                    found.add("ERSS")
+        except OSError:
+            pass
+    return found
+
+
 def judge(gpu, game):
     """填 game.verdict / game.reason"""
     has_g = "nvngx_dlssg.dll" in game.dlls
@@ -750,6 +772,24 @@ def judge(gpu, game):
         game.verdict = V_NO
         game.reason = "未找到主程序 exe"
         return
+    # 艾尔登法环原生没有 DLSS，靠额外组件喂 XeMFG；1.8.6 起 ERSS 被视为自带 XeFG
+    if os.path.basename(game.exe or "").lower() == "eldenring.exe":
+        extras = _eldenring_extras(game)
+        game.verdict = V_XEMFG
+        game.extra_url = ELDENRING_ADDON
+        if extras:
+            game.reason = ("艾尔登法环：已装 " + "、".join(sorted(extras)) +
+                           "，可走 XeMFG。进游戏面板开启 DLSS-SR 输入并重启；"
+                           "必须离线、关闭 EAC，并打开 Force game VSync off")
+        else:
+            game.reason = ("艾尔登法环原生无 DLSS，需先装额外组件："
+                           "把 EldenRingDLSS 的 .addon64 放进 Game 文件夹，"
+                           "或装 ERSS mod（zzz_ERSS.dll）。之后在面板开启 "
+                           "DLSS-SR 输入并重启；离线游玩、关闭 EAC、开 Force VSync off。"
+                           "额外组件地址：" + ELDENRING_ADDON)
+        game.xmx_ready = False       # 该游戏 XMX 不可用
+        return
+
     if fam == "blackwell":
         game.verdict = V_NATIVE
         game.reason = "RTX 50 系原生支持多帧生成，无需解锁"

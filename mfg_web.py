@@ -142,6 +142,23 @@ def _psid(gpu_name):
     return 129
 
 
+SELF_REPO = "Freedomwingss/MFG-Unlock-Manager"
+
+
+def self_update_check():
+    """读本项目在 GitHub 的最新 release，用于版本号上的红点"""
+    try:
+        req = urllib.request.Request(
+            f"https://api.github.com/repos/{SELF_REPO}/releases/latest",
+            headers={"User-Agent": "MFGUnlockManager",
+                     "Accept": "application/vnd.github+json"})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            d = json.loads(r.read().decode("utf-8"))
+        return (d.get("tag_name") or "").lstrip("v")
+    except Exception:
+        return ""
+
+
 def latest_driver(timeout=20):
     """NVIDIA 官方接口查 GeForce 最新驱动版本（缓存 1 小时）"""
     now = time.time()
@@ -211,6 +228,8 @@ class State:
             "latest": latest,
             "upToDate": up_to_date,
             "xmxReady": bool(g.xmx_ready),
+            "extraUrl": g.extra_url,
+            "extraName": "EldenRingDLSS" if g.extra_url else "",
             "path": g.path,
             "dir": g.name,
             "name": self.names.get(g.path) or mfg_names.zh_name(g.name),
@@ -250,6 +269,8 @@ class State:
                 "total": self.total,
                 "progress": self.progress,
                 "version": core.APP_VERSION,
+                "appLatest": getattr(ST, "self_latest", ""),
+                "appRepo": SELF_REPO,
             }
 
     def _mfg_current(self):
@@ -404,6 +425,7 @@ def boot_env():
             break
         time.sleep(1.2)
         ST.gpu = core.detect_gpu()
+    ST.self_latest = self_update_check()
     ST.plugin = _retry(core.fetch_latest_release) or ST.plugin
     ST.reshade_ver = _retry(reshade.latest_version, 2) or ST.reshade_ver
     ST.dlssg = _retry(mfg_dlssg.latest, 2) or ST.dlssg
@@ -411,6 +433,8 @@ def boot_env():
 
     # 只在装好后第一次启动时扫盘；之后直接读上次的快照，保护硬盘也更快
     snap = ST.cfg.get("snapshot")
+    if snap and ST.cfg.get("snapshot_rule", 1) < 2:
+        snap = None            # 判定规则升级（艾尔登法环），旧快照需重算
     if snap and ST.cfg.get("snapshot_gpu") and ST.cfg.get("snapshot_gpu") != ST.gpu.family:
         snap = None            # 换了显卡 / 上次没读到显卡，快照不可信
     if snap:
@@ -434,6 +458,7 @@ def _snapshot():
             "exe": g.exe, "exe_dir": g.exe_dir, "arch": g.arch, "exe_size": g.exe_size,
             "verdict": g.verdict, "reason": g.reason, "verified": g.verified,
             "xmx_ready": g.xmx_ready,
+            "extra_url": g.extra_url,
             "reshade": g.reshade,
             "dlls": {k: {"path": v.get("path", ""),
                          "ver": list(v["ver"]) if v.get("ver") else None}
@@ -459,6 +484,7 @@ def _restore(snap):
         g.reason = d.get("reason", "")
         g.verified = d.get("verified", "")
         g.xmx_ready = bool(d.get("xmx_ready"))
+        g.extra_url = d.get("extra_url", "")
         g.reshade = bool(d.get("reshade"))
         g.dlls = {k: {"path": v.get("path", ""),
                       "ver": tuple(v["ver"]) if v.get("ver") else None}
@@ -466,7 +492,8 @@ def _restore(snap):
         g.reshade_ver = tuple(d["reshade_ver"]) if d.get("reshade_ver") else None
         g.installed_version = (tuple(d["installed_version"])
                                if d.get("installed_version") else None)
-        if os.path.isdir(g.path):
+        ignored = {os.path.normcase(x) for x in ST.cfg.get("ignore", [])}
+        if os.path.isdir(g.path) and os.path.normcase(g.path) not in ignored:
             games.append(g)
     return games
 
@@ -476,13 +503,18 @@ GPU_OK = ("ada", "ampere", "turing", "blackwell")
 
 def do_scan():
     # boot_env 是后台线程，扫描可能先到；等它把显卡读完
-    for _ in range(24):
+    for _ in range(40):
         if ST.gpu.family in GPU_OK:
             break
         time.sleep(0.5)
     else:
-        ST.set_progress("error", "显卡还没就绪，稍后再扫描", 0, 0, False)
-        return
+        try:
+            ST.gpu = core.detect_gpu()      # 最后自己再读一次
+        except Exception:
+            pass
+        if ST.gpu.family not in GPU_OK:
+            ST.set_progress("error", "显卡还没就绪，稍后再扫描", 0, 0, False)
+            return
     with ST.lock:
         if ST.scanning:
             return
@@ -495,7 +527,9 @@ def do_scan():
 
     try:
         cache = ST.cfg.get("cache", {})
-        games = core.enumerate_games(ST.cfg.get("libraries", []))
+        ignored = {os.path.normcase(x) for x in ST.cfg.get("ignore", [])}
+        games = [g for g in core.enumerate_games(ST.cfg.get("libraries", []))
+                 if os.path.normcase(g.path) not in ignored]
         with ST.lock:
             ST.total = len(games)
         for i, g in enumerate(games, 1):
@@ -531,6 +565,7 @@ def do_scan():
         ST.cfg["cache"] = cache
         ST.cfg["snapshot"] = _snapshot()
         ST.cfg["snapshot_gpu"] = ST.gpu.family
+        ST.cfg["snapshot_rule"] = 2
         core.save_config(ST.cfg)
     except Exception:
         traceback.print_exc()
@@ -819,6 +854,9 @@ def add_manual_game(path):
         ST.games.append(g)
         ST.by_path[g.path] = g
         ST.names[g.path] = mfg_names.zh_name(g.name)
+    ig = [x for x in ST.cfg.get("ignore", [])
+          if os.path.normcase(x) != os.path.normcase(g.path)]
+    ST.cfg["ignore"] = ig
     manual = ST.cfg.setdefault("manual", [])
     if g.path not in manual:
         manual.append(g.path)
@@ -1397,6 +1435,22 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     ok = False
             self._json({"ok": ok, "url": target, "via": how})
+        elif path == "/api/remove":
+            q = parse_qs(u.query)
+            gp = unquote(q.get("p", [""])[0])
+            with ST.lock:
+                ig = set(ST.cfg.get("ignore", []))
+                ig.add(gp)
+                ST.cfg["ignore"] = sorted(ig)
+                ST.by_path.pop(gp, None)
+                ST.names.pop(gp, None)
+                ST.games = [x for x in ST.games if x.path != gp]
+                ST.total = len(ST.games)
+                ST.scanned = len(ST.games)
+                ST.cfg["snapshot"] = [d for d in (ST.cfg.get("snapshot") or [])
+                                      if d.get("path") != gp]
+                core.save_config(ST.cfg)
+            self._json({"ok": True})
         elif path == "/api/ping":
             self._json({"ok": True})
         elif path == "/api/backup":

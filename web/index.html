@@ -210,7 +210,27 @@
     pointer-events:none; opacity:0; transform:translateY(2px); transition:opacity .12s, transform .12s}
   #tip.show{opacity:1; transform:translateY(0)}
   #tip b{color:var(--acc); font-weight:600}
-  .ver{margin-left:auto; color:var(--dim); font-size:.72rem; letter-spacing:.02em}
+  /* 右键菜单 */
+  .ctx{position:fixed; z-index:95; min-width:9rem; padding:.28rem;
+    background:#333; border:1px solid rgba(255,255,255,.14); border-radius:7px;
+    box-shadow:0 12px 34px rgba(0,0,0,.55); display:none; font-size:.8rem}
+  .ctx.show{display:block}
+  .ctx button{display:block; width:100%; text-align:left; padding:.38rem .6rem;
+    background:none; border:0; border-radius:4px; color:var(--fg); cursor:pointer}
+  .ctx button:hover{background:rgba(76,194,255,.18)}
+  .ctx button.danger{color:#ff9c9c}
+  .ctx button.danger:hover{background:rgba(255,77,79,.16)}
+  .ctx hr{border:0; border-top:1px solid rgba(255,255,255,.1); margin:.28rem .3rem}
+  .extra-link{display:inline-block; margin:.1rem 0 .5rem; padding:.3rem .6rem;
+    border:1px solid rgba(76,194,255,.4); border-radius:5px; color:#8fd6ff;
+    font-size:.76rem; text-decoration:none; background:rgba(76,194,255,.08)}
+  .extra-link:hover{background:rgba(76,194,255,.18)}
+  .ver{margin-left:auto; color:var(--dim); font-size:.72rem; letter-spacing:.02em;
+    position:relative; cursor:pointer; padding-right:.3rem}
+  .ver:hover{color:var(--fg)}
+  .ver .dot{position:absolute; top:-2px; right:-3px; width:6px; height:6px;
+    border-radius:50%; background:#ff4d4f; box-shadow:0 0 0 2px #202020; display:none}
+  .ver.has-new .dot{display:block}
   #toasts{position:fixed; right:1.1rem; bottom:2.5rem; display:flex;
     flex-direction:column; gap:.45rem; z-index:50; max-width:26rem}
   .toast{background:var(--card); border:1px solid var(--line); border-left:3px solid var(--acc);
@@ -277,12 +297,6 @@
     <div class="actions" id="actions" style="display:none">
       <button class="btn primary wide" id="btnInstall" data-tip="部署 ReShade 宿主 + 最新插件<br>需要时自动升级 DLSS-G；旧文件先备份">一键安装</button>
       <button class="btn danger wide" id="btnUninstall" data-tip="移除插件与 ReShade 宿主<br>文件移入备份目录，可恢复">一键卸载</button>
-      <div class="actionrow">
-        <button class="btn" id="btnOpen" data-tip="在资源管理器里打开游戏 exe 所在目录">打开目录</button>
-        <button class="btn" id="btnLocal" data-tip="手动选一个 addon64 文件安装<br>离线或想用特定版本时用">本地文件</button>
-        <button class="btn" id="btnReport" data-tip="为当前游戏生成运行诊断报告到桌面<br>进游戏跑一次再生成，能看出注入与插件加载结果">报告</button>
-        <button class="btn" id="btnBackup" data-tip="打开备份目录，查看历次安装前的文件">备份</button>
-      </div>
     </div>
   </section>
 </main>
@@ -291,7 +305,7 @@
   <span id="status" data-tip="扫描进度会显示在这里<br>有操作时也会显示当前在做的事">就绪</span>
   <div class="bar" id="bar"><i></i></div>
   <span id="pct"></span>
-  <span id="ver" class="ver"></span>
+  <span id="ver" class="ver" data-tip="当前版本。点一下打开 GitHub 更新页<br>右上角红点表示有新版本可下载">v—<i class="dot"></i></span>
 </footer>
 <div class="mask" id="envMask">
   <div class="modal">
@@ -299,6 +313,7 @@
     <div class="modal-b" id="envBody"><div class="env-sum">正在检查…</div></div>
   </div>
 </div>
+<div id="ctx" class="ctx"></div>
 <div id="toasts"></div>
 
 <script>
@@ -361,7 +376,12 @@ async function pollState() {
     $("#bGpu").className = "badge";
     $("#bRs").innerHTML = s.reshadeVer ? `ReShade <b>${s.reshadeVer}</b>` : "ReShade <b>—</b>";
     $("#bPl").innerHTML = s.plugin ? `MFG <b>${s.plugin}</b>` : "MFG <b>—</b>";
-    if (s.version) $("#ver").textContent = "v" + s.version;
+    if (s.version) $("#ver").innerHTML = "v" + s.version + "<i class=\"dot\"></i>";
+    $("#ver").classList.toggle("has-new", !!(s.appLatest && s.version && s.appLatest !== s.version));
+    $("#ver").dataset.tip = "当前版本 v" + (s.version || "—") +
+      "<br>点一下打开 GitHub 更新页" +
+      (s.appLatest && s.version && s.appLatest !== s.version
+        ? "<br><b>有新版本 v" + s.appLatest + " 可下载</b>" : "<br>已是最新版本");
     renderLibs(s.libraries);
     updateProgress(s.progress);
     if (s.scanning !== lastScanFlag) { lastScanFlag = s.scanning; scanning = s.scanning; renderRows(); }
@@ -520,6 +540,7 @@ function renderDetail() {
     <div class="sect">判定</div>
     <div class="verdict ${g.verdict}">${escapeHtml(g.verdictText)}</div>
     <div class="reason">${escapeHtml(g.reason || "")}</div>
+    ${g.extraUrl ? `<a class="extra-link" href="javascript:;" onclick="openLink('${g.extraUrl}', ' 额外组件'); return false;">下载额外组件 ${escapeHtml(g.extraName || "")} ↗</a>` : ""}
     <div class="sect">检查项</div>
     <table class="checks">
       <tr><td>DLSS-G</td><td class="${g.dlssg ? "v-ok" : (g.verdict === "no" ? "v-bad" : "v-warn")}">${g.dlssg ? "nvngx_dlssg " + g.dlssg : "未找到"}</td></tr>
@@ -618,15 +639,41 @@ function call(path, label) {
     throw e;
   });
 }
-$("#btnOpen").onclick = () => sel && call("/api/open?p=" + encodeURIComponent(sel.path), "打开目录");
-$("#btnBackup").onclick = () => call("/api/backup", "打开备份目录");
-$("#btnReport").onclick = async () => {
+/* 详情区的操作：现在统一由右键菜单调用 */
+function actOpen() {
+  if (sel) call("/api/open?p=" + encodeURIComponent(sel.path), "打开目录");
+}
+function actBackup() { call("/api/backup", "打开备份目录"); }
+async function actReport() {
   if (!sel) return;
   try {
     const r = await api("/api/report?p=" + encodeURIComponent(sel.path));
-    toast(r.ok ? `已生成「${r.game}」的诊断报告：\n` + r.path : (r.error || "生成失败"), r.ok ? "ok" : "err");
+    toast(r.ok ? `已生成「${r.game}」的诊断报告：\n` + r.path
+               : (r.error || "生成失败"), r.ok ? "ok" : "err");
   } catch (e) { toast(e.message, "err"); }
-};
+}
+async function actLocal() {
+  if (!sel || busy) return;
+  try {
+    const r = await api("/api/pickfile");
+    if (!r.ok) return;
+    await api("/api/localinstall", { method: "POST", body: { path: sel.path, src: r.path } });
+    toast("已安装选中的 addon64", "ok");
+  } catch (e) { toast(e.message, "err"); }
+}
+async function actRemove() {
+  if (!sel) return;
+  const name = sel.name;
+  if (!confirm("把「" + name + "」从列表移除？\n\n不会删除游戏文件，之后也不会再自动扫到。\n想加回来点左侧「添加游戏」手动指定目录。")) return;
+  try {
+    await api("/api/remove?p=" + encodeURIComponent(sel.path));
+    sel = null;
+    lastSig = "";
+    toast("已从列表移除：" + name, "ok");
+    await pollGames();
+    renderDetail();
+  } catch (e) { toast(e.message, "err"); }
+}
 function openLink(url, label) {
   toast("正在打开" + (label || "链接") + "…", "ok");
   api("/api/openurl?u=" + encodeURIComponent(url))
@@ -635,14 +682,8 @@ function openLink(url, label) {
 }
 $("#bRs").onclick = () => openLink("https://reshade.me/", " ReShade 下载页");
 $("#bPl").onclick = () => openLink("https://github.com/mavismmg/MFGAdaUnlock-RenoDx/releases", " MFG 发布页");
-$("#btnLocal").onclick = async () => {
-  if (!sel || busy) return;
-  try {
-    const r = await api("/api/pickfile");
-    if (!r.ok) return;
-    await api("/api/localinstall", { method: "POST", body: { path: sel.path, src: r.path } });
-  } catch (e) { toast(e.message, "err"); }
-};
+$("#ver").onclick = () => openLink(
+  "https://github.com/Freedomwingss/MFG-Unlock-Manager/releases/latest", " 更新页");
 $("#q").oninput = () => { lastSig = ""; renderRows(); };
 document.querySelectorAll(".tab").forEach(t => t.onclick = () => {
   filter = t.dataset.f;
@@ -650,6 +691,47 @@ document.querySelectorAll(".tab").forEach(t => t.onclick = () => {
   lastSig = "";
   renderRows();
 });
+
+/* 游戏列表右键菜单 */
+const CTX_ITEMS = [
+  ["打开目录", actOpen],
+  ["本地文件…", actLocal],
+  ["生成报告", actReport],
+  ["备份目录", actBackup],
+  ["-", null],
+  ["从列表移除", actRemove, "danger"],
+];
+
+function hideCtx() { $("#ctx").classList.remove("show"); }
+
+function showCtx(x, y) {
+  const m = $("#ctx");
+  m.innerHTML = "";
+  CTX_ITEMS.forEach(it => {
+    if (!it[1]) { m.appendChild(document.createElement("hr")); return; }
+    const b = el("button", it[2] || "", it[0]);
+    b.onclick = e => { e.stopPropagation(); hideCtx(); it[1](); };
+    m.appendChild(b);
+  });
+  m.classList.add("show");
+  const r = m.getBoundingClientRect();
+  m.style.left = Math.max(6, Math.min(x, innerWidth - r.width - 8)) + "px";
+  m.style.top = Math.max(6, Math.min(y, innerHeight - r.height - 8)) + "px";
+}
+
+$("#rows").addEventListener("contextmenu", e => {
+  const row = e.target.closest && e.target.closest(".row");
+  if (!row) return;
+  e.preventDefault();
+  const g = games.find(x => x.path === row.dataset.path);
+  if (g) selectGame(g);
+  showCtx(e.clientX, e.clientY);
+});
+document.addEventListener("mousedown", e => {
+  if (!(e.target.closest && e.target.closest("#ctx"))) hideCtx();
+});
+document.addEventListener("keydown", e => { if (e.key === "Escape") hideCtx(); });
+window.addEventListener("blur", hideCtx);
 
 /* 悬停提示：任何带 data-tip 的元素都能用 */
 (function () {
