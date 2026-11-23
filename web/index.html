@@ -139,7 +139,7 @@
   .row .tag{font-size:.7rem; padding:.16rem .48rem; border-radius:999px;
     border:1px solid var(--line); color:var(--mut); white-space:nowrap; flex:none}
   .tag.full{color:#9fe870; border-color:transparent; background:rgba(108,203,95,.14)}
-  .tag.needdll,.tag.xemfg{color:#fce100; border-color:transparent; background:rgba(252,225,0,.12)}
+  .tag.needdll,.tag.xemfg,.tag.force{color:#fce100; border-color:transparent; background:rgba(252,225,0,.12)}
   .tag.inst{color:#8fd6ff; border-color:transparent; background:rgba(76,194,255,.14)}
   .tag.upd{color:#9fdcff; border-color:rgba(76,194,255,.35); background:rgba(76,194,255,.16);
     display:inline-flex; align-items:center; gap:.24rem}
@@ -154,7 +154,7 @@
   .sect{margin:.95rem 0 .3rem; color:var(--mut); font-size:.7rem;
     letter-spacing:.08em; text-transform:uppercase}
   .verdict{font-size:.94rem; font-weight:600; margin-bottom:.2rem}
-  .verdict.full{color:var(--ok)} .verdict.needdll,.verdict.xemfg{color:var(--warn)}
+  .verdict.full{color:var(--ok)} .verdict.needdll,.verdict.xemfg,.verdict.force{color:var(--warn)}
   .verdict.no{color:var(--err)} .verdict.native{color:var(--mut)}
   .reason{color:var(--mut); font-size:.79rem; line-height:1.55}
   table.checks{width:100%; border-collapse:collapse; font-size:.81rem}
@@ -448,7 +448,7 @@ async function pollGames() {
 function visible() {
   const q = ($("#q").value || "").trim().toLowerCase();
   return games.filter(g => {
-    if (filter === "ok" && !["full", "needdll", "xemfg"].includes(g.verdict)) return false;
+    if (filter === "ok" && !["full", "needdll", "xemfg", "force"].includes(g.verdict)) return false;
     if (filter === "inst" && !g.installed) return false;
     if (q && !(g.name.toLowerCase().includes(q) || g.dir.toLowerCase().includes(q))) return false;
     return true;
@@ -501,7 +501,7 @@ function escapeHtml(s) {
 }
 
 function renderStats() {
-  const ok = games.filter(g => ["full", "needdll", "xemfg"].includes(g.verdict)).length;
+  const ok = games.filter(g => ["full", "needdll", "xemfg", "force"].includes(g.verdict)).length;
   const inst = games.filter(g => g.installed).length;
   $("#sTotal").textContent = games.length;
   $("#sOk").textContent = ok;
@@ -519,7 +519,7 @@ function selectGame(g) {
 function refreshButtons() {
   if (!sel) return;
   const g = sel;
-  const can = ["full", "needdll", "xemfg"].includes(g.verdict);
+  const can = ["full", "needdll", "xemfg", "force"].includes(g.verdict);
   const b = $("#btnInstall");
   b.textContent = g.installed ? "重新安装 / 更新" : "一键安装";
   b.disabled = !can;
@@ -544,17 +544,20 @@ function renderDetail() {
     <div class="sect">检查项</div>
     <table class="checks">
       <tr><td>DLSS-G</td><td class="${g.dlssg ? "v-ok" : (g.verdict === "no" ? "v-bad" : "v-warn")}">${g.dlssg ? "nvngx_dlssg " + g.dlssg : "未找到"}</td></tr>
-      <tr><td>Streamline</td><td class="${g.sl ? "v-ok" : "v-mut"}">${g.sl || "未找到"}</td></tr>
+      <tr><td>Streamline</td><td class="${g.sl ? "v-ok" : "v-mut"}">${g.sl || "未找到"}${g.slLocal ? ` <span class="v-mut">· 插件自带一份</span>` : ""}</td></tr>
       <tr><td>XeSS 帧生成</td><td class="${g.xess ? "v-ok" : "v-mut"}">${g.xess || "未找到"}</td></tr>
-      <tr><td data-tip="XMX 是 1.8 新增模式：Intel 多帧模型跑在 DLSS-G 的呈现管线里<br>Intel 的 libxess_fg + libxell 必须放在 <b>exe 所在目录</b>，别处的副本插件不认">XMX 模式</td><td class="${g.xmxReady ? "v-ok" : "v-warn"}">${
+      <tr><td data-tip="1.10 起原来的 XMX 改名为 XeMFG DLSS-G：Intel 的多帧模型 + NVIDIA DLSS-G 的呈现<br>Intel 的 libxess_fg + libxell 必须放在 <b>exe 所在目录</b>，别处的副本插件不认">XeMFG DLSS-G</td><td class="${g.xmxReady ? "v-ok" : "v-warn"}">${
         g.verdict === "full"
-          ? (g.xmxReady ? "就绪，面板里选「XeMFG via DLSS-G」；超分输出分辨率要设 100%" : "缺 Intel 文件，点「一键安装」自动补齐（游戏内有合适版本时）")
-          : (g.verdict === "xemfg" ? "该游戏走 XeMFG 后端" : "不适用")
+          ? (g.xmxReady ? "就绪，面板里选「XeMFG DLSS-G」；超分输出分辨率要设 100%" : "缺 Intel 文件，点「一键安装」自动补齐（游戏内有合适版本时）")
+          : (g.verdict === "xemfg" || g.verdict === "force" ? "该游戏走 XeMFG 后端（2x–6x）" : "不适用")
       }</td></tr>
+      <tr><td data-tip="硬件加速 GPU 计划。DLSS 帧生成必须开启，否则游戏接请求但不产帧">HAGS</td><td class="${g.hags ? "v-ok" : "v-bad"}">${g.hags ? "已开启" : "未开启 · 设置 → 系统 → 显示 → 显示卡 → 更改默认图形设置"}</td></tr>
+      ${g.preAda ? `<tr><td data-tip="20/30 系要求插件在游戏启动 Streamline 之前加载">20/30 系</td><td class="v-warn">实验性支持 · 首次需启动游戏两次</td></tr>` : ""}
       <tr><td>主程序</td><td class="${g.arch === "x64" ? "v-ok" : "v-bad"}">${g.arch || "未知"}</td></tr>
       <tr><td>ReShade 宿主</td><td>${rsLine}</td></tr>
       ${g.verified ? `<tr><td>作者实测</td><td class="v-mut">在 README 已测列表中</td></tr>` : ""}
     </table>
+    ${(g.dupAddons && g.dupAddons.length) ? `<div class="reason" style="margin-top:.6rem"><span class="v-warn">⚠ 同目录还有其它解锁插件：</span>${escapeHtml(g.dupAddons.join("、"))}<br>1.9 起插件面板会警告重复加载，建议只留一个。</div>` : ""}
     <table class="checks" style="margin-top:.95rem">
       <tr><td>MFG 版本</td><td class="${g.installed ? (g.upToDate ? "v-ok" : "v-warn") : "v-mut"}">${
         g.installed ? "v" + g.installedVer + (g.upToDate ? "（已是最新）" : "（可更新）") : "未安装 · 最新 " + (g.latest || "")

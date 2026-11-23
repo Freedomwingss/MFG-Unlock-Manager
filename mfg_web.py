@@ -30,6 +30,7 @@ VERDICT_TEXT = {
     core.V_FULL: "支持 · 原生 3–6×",
     core.V_NEED_DLL: "需替换 DLSS-G",
     core.V_XEMFG: "仅 XeMFG 后端",
+    core.V_FORCE: "需强制帧生成",
     core.V_NATIVE: "50 系原生支持",
     core.V_NO: "不支持",
 }
@@ -228,6 +229,11 @@ class State:
             "latest": latest,
             "upToDate": up_to_date,
             "xmxReady": bool(g.xmx_ready),
+            "preAda": bool(g.pre_ada),
+            "hags": bool(g.hags),
+            "dupAddons": list(g.dup_addons or []),
+            "slLocal": bool(g.streamline_local),
+            "ini": dict(g.ini or {}),
             "extraUrl": g.extra_url,
             "extraName": "EldenRingDLSS" if g.extra_url else "",
             "path": g.path,
@@ -433,7 +439,7 @@ def boot_env():
 
     # 只在装好后第一次启动时扫盘；之后直接读上次的快照，保护硬盘也更快
     snap = ST.cfg.get("snapshot")
-    if snap and ST.cfg.get("snapshot_rule", 1) < 2:
+    if snap and ST.cfg.get("snapshot_rule", 1) < 3:
         snap = None            # 判定规则升级（艾尔登法环），旧快照需重算
     if snap and ST.cfg.get("snapshot_gpu") and ST.cfg.get("snapshot_gpu") != ST.gpu.family:
         snap = None            # 换了显卡 / 上次没读到显卡，快照不可信
@@ -457,7 +463,9 @@ def _snapshot():
             "name": g.name, "path": g.path, "library": g.library, "appid": g.appid,
             "exe": g.exe, "exe_dir": g.exe_dir, "arch": g.arch, "exe_size": g.exe_size,
             "verdict": g.verdict, "reason": g.reason, "verified": g.verified,
-            "xmx_ready": g.xmx_ready,
+            "xmx_ready": g.xmx_ready, "pre_ada": g.pre_ada, "hags": g.hags,
+            "dup_addons": list(g.dup_addons or []), "ini": dict(g.ini or {}),
+            "streamline_local": g.streamline_local,
             "extra_url": g.extra_url,
             "reshade": g.reshade,
             "dlls": {k: {"path": v.get("path", ""),
@@ -485,6 +493,11 @@ def _restore(snap):
         g.verified = d.get("verified", "")
         g.xmx_ready = bool(d.get("xmx_ready"))
         g.extra_url = d.get("extra_url", "")
+        g.pre_ada = bool(d.get("pre_ada"))
+        g.hags = bool(d.get("hags"))
+        g.dup_addons = list(d.get("dup_addons") or [])
+        g.ini = dict(d.get("ini") or {})
+        g.streamline_local = bool(d.get("streamline_local"))
         g.reshade = bool(d.get("reshade"))
         g.dlls = {k: {"path": v.get("path", ""),
                       "ver": tuple(v["ver"]) if v.get("ver") else None}
@@ -565,7 +578,7 @@ def do_scan():
         ST.cfg["cache"] = cache
         ST.cfg["snapshot"] = _snapshot()
         ST.cfg["snapshot_gpu"] = ST.gpu.family
-        ST.cfg["snapshot_rule"] = 2
+        ST.cfg["snapshot_rule"] = 3
         core.save_config(ST.cfg)
     except Exception:
         traceback.print_exc()
@@ -627,12 +640,18 @@ def job_install(path, with_reshade):
             return
         notes.append(msg)
 
-        # XMX 需要 exe 目录里有 Intel 运行时；游戏里别处有合适版本就顺手搬过来
-        if g.verdict == core.V_FULL and not core.intel_ready(g.exe_dir):
+        # XeMFG 后端与 XeMFG DLSS-G 都要 exe 目录里有 Intel 运行时；别处有合适版本就搬过来
+        if g.verdict in (core.V_FULL, core.V_FORCE, core.V_XEMFG) \
+                and not core.intel_ready(g.exe_dir):
             ST.set_progress("intel", "正在补齐 Intel 运行时…", 0, 0, True)
             ok_i, msg_i = core.place_intel_files(g)
             notes.append("Intel 运行时：" + msg_i)
             g.xmx_ready = core.intel_ready(g.exe_dir)
+
+        # 20/30 系要求插件在游戏启动 Streamline 之前加载，先把 LoadFromDllMain 打开
+        if g.pre_ada:
+            ok_e, msg_e = core.ensure_early_load(g.exe_dir)
+            notes.append("早加载：" + msg_e)
 
         ST.set_progress("done", "安装完成", 0, 0, False)
         with ST.lock:
@@ -1001,6 +1020,22 @@ def build_report(game):
     dg = game.dlls.get("nvngx_dlssg.dll")
     crashes = _game_crashes(game)
 
+    # 上游 1.9–1.11 的现场记录
+    exe_dir = game.exe_dir or ""
+    hang_p = os.path.join(exe_dir, core.HANG_FILE)
+    crash_p = os.path.join(exe_dir, core.CRASH_FILE)
+    sl_p = os.path.join(exe_dir, "sl.log")
+    try:
+        dumps = sorted(f for f in os.listdir(exe_dir)
+                       if f.lower().startswith("mfgadaunlock-crash-")
+                       and f.lower().endswith(".dmp"))
+    except OSError:
+        dumps = []
+    hags = core.hags_on()
+    dups = core.dup_addons(exe_dir)
+    early = core.early_load_state(exe_dir)
+    mfg_ini = game.ini or core.read_ini(exe_dir)
+
     # ---- 结论 ----
     verdict_lines = []
     if not parsed:
@@ -1029,6 +1064,17 @@ def build_report(game):
             verdict_lines.append("检查：代理 dll 是否被同名文件替换、是否被其他 overlay 工具占用。")
         if crashes:
             verdict_lines.append(f"另发现 {len(crashes)} 条崩溃记录，时间见下方。")
+
+    if os.path.isfile(hang_p):
+        verdict_lines.append("插件写了 " + core.HANG_FILE +
+                             " —— 上次运行卡在它监视的环节（启动 Streamline、"
+                             "创建交换链、Present 或 NGX 建特性），位置见下方。")
+    elif os.path.isfile(crash_p) or dumps:
+        verdict_lines.append("插件记录了崩溃：" +
+                             "、".join([n for n in (core.CRASH_FILE,) if os.path.isfile(crash_p)]
+                                      + dumps) + "，见下方明细。")
+    if not hags:
+        verdict_lines.append("HAGS（硬件加速 GPU 计划）未开启 —— 帧生成请求会被接受但不产帧。")
 
     add("=" * 64)
     add(f"  MFG 运行诊断 — {name}   {mark}")
@@ -1108,8 +1154,27 @@ def build_report(game):
     add(f"  DLSS-G      {vstr(dg['ver']) if dg else '未找到'}")
     sl = (game.dlls.get("sl.interposer.dll") or {}).get("ver")
     add(f"  Streamline  {vstr(sl) if sl else '-'}")
+    add(f"  自带 Streamline  {'有（' + core.STREAMLINE_DIR + '）' if core.has_streamline_local(exe_dir) else '无'}")
     xf = (game.dlls.get("libxess_fg.dll") or {}).get("ver")
     add(f"  XeSS-FG     {vstr(xf) if xf else '未找到'}")
+    add(f"  Intel 运行时  {'已就位' if core.intel_ready(exe_dir) else '缺 libxess_fg / libxell'}")
+    add(f"  HAGS        {'已开启' if hags else '未开启（帧生成无法产帧）'}")
+    if early is None:
+        add("  早加载      ReShade.ini 无 [ADDON] LoadFromDllMain 设置")
+    else:
+        add(f"  早加载      LoadFromDllMain={1 if early else 0}")
+    if dups:
+        add("  ⚠ 重复插件  " + "、".join(dups))
+    add("")
+
+    add("[插件设置]")
+    add(f"  文件        {core.INI_FILE}" + ("" if mfg_ini else "（不存在，插件用默认值）"))
+    if mfg_ini:
+        for k in core.INI_KEYS:
+            if k in mfg_ini:
+                add(f"  {k:<14}{mfg_ini[k]}")
+    else:
+        add("  提示        面板里改设置会写进这个文件；本工具只读不改")
     add("")
 
     add("[崩溃与系统事件]")
@@ -1117,7 +1182,23 @@ def build_report(game):
         for cn, ct in crashes:
             add(f"  {ct}  {cn}")
     else:
-        add("  游戏目录内无崩溃转储")
+        add("  游戏目录内无引擎崩溃转储")
+    if os.path.isfile(hang_p):
+        add(f"  {core.HANG_FILE}（上次卡死位置）：")
+        for line in _tail(hang_p, 10).splitlines():
+            add("    " + line)
+    if os.path.isfile(crash_p):
+        add(f"  {core.CRASH_FILE}（最近一次崩溃）：")
+        for line in _tail(crash_p, 8).splitlines():
+            add("    " + line)
+    if dumps:
+        add("  崩溃转储  " + "、".join(dumps[:4]))
+    if os.path.isfile(sl_p):
+        add("  sl.log（Streamline 自己的日志）：")
+        for line in _tail(sl_p, 8).splitlines():
+            add("    " + line)
+    else:
+        add("  sl.log      未生成（面板 Support → Streamline log 打开后才有）")
     kws = [os.path.splitext(os.path.basename(game.exe))[0]] if game.exe else []
     kws = [k for k in kws if len(k) >= 4]
     events = _recent_events(kws, hours=72)
@@ -1143,11 +1224,38 @@ def build_report(game):
         tips.append("游戏未自带 DLSS-G，点「一键安装」会自动放入 310.x")
     if parsed and parsed[0][3]["init"] and not parsed[0][3]["addon_loaded"] and has_addon:
         tips.append("ReShade 起来了但插件没加载：先把 ReShade 更新到最新，再确认 addon64 未被杀软隔离")
+    if not hags:
+        tips.append("开启 HAGS：设置 → 系统 → 显示 → 显示卡 → 更改默认图形设置 → "
+                    "打开「硬件加速 GPU 计划」，重启。不开的话 DLSS 帧生成只接请求不产帧")
+    if game.pre_ada and early is False:
+        tips.append("20/30 系要在游戏启动 Streamline 前加载插件：把 ReShade.ini 的 "
+                    "[ADDON] LoadFromDllMain 设为 1，然后启动游戏两次")
+    if dups:
+        tips.append("同目录还有 " + "、".join(dups) + "：1.9 起面板会警告重复加载，"
+                    "建议只留 " + core.ADDON_NAME)
+    if os.path.isfile(hang_p):
+        tips.append("上次运行卡死（见 " + core.HANG_FILE + "）：把这份报告和 "
+                    "sl.log、hang 文件一起发给上游 issue；"
+                    "游戏有 RenoDX DLSS 时先关掉再试")
     all_txt = "\n".join(t[2] for t in parsed)
     if "xmx execute failed: -4" in all_txt or "XeFG returned an error" in all_txt:
-        tips.append("XMX 报 XeFG 错误（-4）：把游戏内「超分输出分辨率」改成 100%，"
+        tips.append("XeMFG DLSS-G 报 XeFG 错误（-4）：把游戏内「超分输出分辨率」改成 100%，"
                     "然后完全退出重进。自动 / 75% 这类非整档会让深度图与运动矢量的"
                     "尺寸对不上，Intel 的模型每帧都拒绝")
+    if "does not support fp16" in all_txt or "scRGB" in all_txt:
+        tips.append("FP16 / scRGB HDR 交换链：NVIDIA 的 DLSS-G 明确不支持，也不会报错。"
+                    "关掉游戏自己的 HDR（或用 RenoDX 的 HDR），或改用 XeMFG 方式")
+    if "reflex not detected" in all_txt:
+        tips.append("日志里 Reflex not detected：多为 RenoDX DLSS 插件与本插件各建了一条 "
+                    "Streamline 交换链，1.11 已修；保持 RenoDX DLSS 开启并更新插件")
+    if "getcurrentbackbufferindex not called" in all_txt:
+        tips.append("日志里 GetCurrentBackBufferIndex not called（UE 游戏）：1.11 已修，"
+                    "点「一键安装」更新插件即可")
+    if "streamline 1.x" in all_txt or "streamline 1." in all_txt:
+        tips.append("游戏用的是 Streamline 1.x，上游明确不支持；只能等游戏升级或换其他方案")
+    if "closed unexpectedly" in all_txt:
+        tips.append("「上次会话异常结束」是 1.11 之前的误报（Unreal / 反作弊进程强杀导致），"
+                    "更新插件后消失，不影响实际帧生成")
     if "architecture gate refused" in all_txt and game.verdict == core.V_FULL:
         tips.append("出现 architecture gate refused：DLSS-G 的架构门被拒，"
                     "倍率通常仍可用；若倍率异常，把 DLSS-G 更新到 310.x 再试")
@@ -1155,6 +1263,12 @@ def build_report(game):
         tips.append("未发现需要处理的问题")
     for t in tips:
         add("  · " + t)
+    add("")
+
+    add("[怎么看画面]")
+    add("  插件自带性能覆盖层：Shift+F10 开关（General → Performance overlay）")
+    add("  Minimal 看输出/游戏帧率，Standard 加帧时间与 1% low，Full 加曲线与延迟")
+    add("  覆盖层不开时不产生任何开销")
     add("")
 
     add("[环境]")

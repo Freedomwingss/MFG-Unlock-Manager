@@ -1,4 +1,4 @@
-# MFG Unlock Manager · v1.0.3
+# MFG Unlock Manager · v1.0.7
 
 给 Steam 游戏一键安装 / 卸载 **MFGAdaUnlock-RenoDx**（RTX 40 系解锁 DLSS 3×–6× 多帧生成）的本地工具，Web 界面。
 
@@ -43,28 +43,48 @@
 
 顶部三个徽章统一默认配色，版本号写成「当前版本 / 最新版本」，例如 。
 
-## MFG 1.8 的 XMX 模式
+## MFG 1.8–1.11 的三种帧生成方式
 
-1.8.0 起插件有三种后端，都在同一个 `renodx-mfgunlock.addon64` 里：
+上游 1.10 把 **XMX 改名为 XeMFG DLSS-G**（XMX 是 Intel 矩阵单元的名字，不是生成器）。三种方式都在同一个 `renodx-mfgunlock.addon64` 里：
 
-| 模式 | 需要的额外文件 | 适用 |
-|---|---|---|
-| DLSS-G | 现代 `nvngx_dlssg.dll` | 兜底，1.8 之前的老路子 |
-| **XMX** | DLSS-G 文件 + Intel `libxess_fg.dll` `libxell.dll` | **有原生 DLSS 帧生成的游戏，官方推荐**。延迟最低、Alt+Tab 更稳 |
-| XeMFG | 仅 Intel 两个文件 | 没有原生帧生成的游戏 |
+| 模式 | 生成帧 | 呈现与节拍 | 适用 |
+|---|---|---|---|
+| DLSS-G | NVIDIA 生成器 | NVIDIA DLSS-G | 40/50 系常规路线；20/30 系自 1.9 起实验性可用 |
+| XeMFG | Intel XeFG 多帧模型 | XeFG 自己的呈现器 | 没有原生帧生成的游戏 |
+| **XeMFG DLSS-G**（原 XMX） | Intel XeFG 多帧模型 | NVIDIA DLSS-G（Reflex / flip metering） | **有原生帧生成时官方推荐**，延迟最低、Alt+Tab 更稳 |
 
-管理器会检查 Intel 运行时是否到位（`libxess_fg >= 1.3.1.78`、`libxell >= 1.3.2.10`），详情页显示「XMX 模式」状态。缺文件时进游戏在插件面板点 **Install / update files** 补齐——游戏更新或 Steam 校验会覆盖这两个 DLL，**每次游戏更新后要重装一次**。
+管理器检查 Intel 运行时（`libxess_fg >= 1.3.1.78`、`libxell >= 1.3.2.10`）是否在 **exe 目录**，详情页显示「XeMFG DLSS-G」状态。缺文件进游戏在插件面板点 **Install / update files** 补齐——游戏更新或 Steam 校验会覆盖这两个 DLL，**每次游戏更新后要重装一次**。
+
+### 同步到 1.11 的部分
+
+| 变化 | 管理器怎么处理 |
+|---|---|
+| 20/30 系可跑 DLSS 帧生成（1.9，`PreAdaAdmission`） | 判定改为「支持 · 原生 3–6×」，并提示首次要启动游戏两次 |
+| 插件需在游戏启动 Streamline 前加载（`LoadFromDllMain`） | 一键安装时直接写 `ReShade.ini` 的 `[ADDON] LoadFromDllMain=1`，省掉一次白跑 |
+| 性能覆盖层（1.11，Shift+F10） | 报告最后一节「怎么看画面」给出开关与三档说明 |
+| 自带 Streamline（1.10.1，`MFGUnlock-Streamline`） | 详情页与报告显示是否自带；卸载时连这个文件夹一起进备份 |
+| 卡死 / 崩溃 / Streamline 日志（1.10–1.11） | 报告读取 `MFGAdaUnlock-hang.txt`、`MFGAdaUnlock-crash.txt`、`sl.log` 并给出对应建议 |
+| 重复插件警告（1.9） | 扫描时列出同目录其它 `*mfgunlock*.addon64`，详情页标黄 |
+| 「Add frame generation」（1.10） | 有 DLSS 超分/帧生成管线但缺帧生成的游戏，判定为「需强制帧生成」 |
+| HAGS 必须开启 | 读注册表 `HwSchMode`，未开启在详情页与报告里标红 |
+
+报告扫描的错误签名也跟着更新：FP16/scRGB HDR、Reflex not detected、GetCurrentBackBufferIndex、Streamline 1.x、「上次会话异常结束」误报等，各自给出一条处理建议。
+
+## XeMFG DLSS-G 的一个坑
+
+游戏内「超分输出分辨率」必须是 **100%**。自动 / 75% 这类非整档会让深度图与运动矢量的尺寸对不上，Intel 的模型每帧都拒绝，日志里是 `xmx execute failed: -4`、`xmx not generating: XeFG returned an error`（键名沿用旧名，1.11 也没改）。
 
 ## 判定含义
 
 | 显示 | 含义 | 一键安装 |
 |---|---|---|
-| 支持 · 原生 3–6× | 有 310.x 的 `nvngx_dlssg.dll`，装完游戏里直接出 3×/4×/6× | 可 |
-| 需替换 DLSS-G | 有 DLSS 帧生成管线但 DLL 太旧/缺失 → 点「更新 DLSS-G」 | 可 |
+| 支持 · 原生 3–6× | 有 310.x 的 `nvngx_dlssg.dll`，装完游戏里直接出 3×/4×/6×（20/30 系为实验性） | 可 |
+| 需替换 DLSS-G | 有 DLSS 帧生成管线但 DLL 太旧/缺失 → 点「更新 DLSS-G」；1.10 起面板也能自带 Streamline | 可 |
 | 仅 XeMFG 后端 | 只有 XeSS 帧生成，走 XeMFG 后端 | 可 |
+| 需强制帧生成 | 有 DLSS 超分但没有帧生成 → 面板「Add frame generation」强制开启 | 可 |
 | 不支持 / 50 系原生 | 不显示（已过滤） | — |
 
-判定：找主程序（`platform\steam`、`Binaries\Win64` 优先，再按体积 + 名字相似度）→ 读 PE 版本 → 扫 `nvngx_dlssg.dll` / `sl.*.dll` / `libxess_fg.dll` → 结合显卡架构。
+判定：找主程序（`platform\steam`、`Binaries\Win64` 优先，再按体积 + 名字相似度）→ 读 PE 版本 → 扫 `nvngx_dlssg.dll` / `sl.*.dll` / `libxess_fg.dll` / `nvngx_dlss.dll` → 结合显卡架构。
 
 ## ReShade 精简宿主
 

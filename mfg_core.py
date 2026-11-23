@@ -57,7 +57,7 @@ APP_DATA = os.path.join(_base_dir(), "data")
 APP_VERSION = _read_version()
 CACHE_DIR = os.path.join(APP_DATA, "cache")
 # 改动主程序/dll 识别逻辑时 +1，旧缓存自动失效
-CACHE_VERSION = 5
+CACHE_VERSION = 6
 BACKUP_DIR = os.path.join(APP_DATA, "backup")
 CONFIG_PATH = os.path.join(APP_DATA, "config.json")
 
@@ -73,7 +73,21 @@ MOD_FILES = (
     "MFGAdaUnlock-XeMFG.log",
     "MFGAdaUnlock-XeMFG-compatibility.json",
     "MFGAdaUnlock.profiles.json",
+    # 1.9+ 新增产物
+    "MFGAdaUnlock-hang.txt",          # 卡死记录（1.11）
+    "MFGAdaUnlock-crash.txt",         # 崩溃记录（1.10，CrashDump=1）
+    "sl.log",                          # Streamline 自己的日志（1.10，StreamlineLog=1）
 )
+
+# 1.10.1 起面板可把 Streamline 运行时装到游戏目录的这个子文件夹
+STREAMLINE_DIR = "MFGUnlock-Streamline"
+MOD_DIRS = (STREAMLINE_DIR,)
+HANG_FILE = "MFGAdaUnlock-hang.txt"
+CRASH_FILE = "MFGAdaUnlock-crash.txt"
+INI_FILE = "MFGAdaUnlock.ini"
+
+# 上游 1.9+ 的三种帧生成方式（面板里的名字）
+METHODS = ("DLSS-G", "XeMFG", "XeMFG DLSS-G")
 
 DLL_TARGETS = (
     "nvngx_dlssg.dll",
@@ -81,9 +95,10 @@ DLL_TARGETS = (
     "sl.interposer.dll",
     "libxess_fg.dll",
     "libxell.dll",
+    "nvngx_dlss.dll",        # DLSS 超分：1.10 起「Add frame generation」靠它喂帧生成
 )
 
-# MFG 1.8 的 XMX 模式要求的 Intel 运行时版本（见上游 README）
+# XeMFG DLSS-G（1.10 之前的名字叫 XMX）要求的 Intel 运行时版本
 INTEL_XESS_VER = (1, 3, 1, 78)
 INTEL_XELL_VER = (1, 3, 2, 10)
 
@@ -280,6 +295,7 @@ def detect_gpu():
 V_FULL = "full"
 V_NEED_DLL = "needdll"
 V_XEMFG = "xemfg"
+V_FORCE = "force"       # 无原生帧生成，但可用「Add frame generation」强制开启（1.10+）
 V_NATIVE = "native"
 V_NO = "no"
 
@@ -301,8 +317,13 @@ class Game:
     verdict: str = "no"
     reason: str = ""
     verified: str = ""                              # "" / "dlssg" / "xemfg"
-    xmx_ready: bool = False                         # Intel 运行时文件是否满足 XMX
+    xmx_ready: bool = False                         # Intel 运行时是否满足 XeMFG DLSS-G
     extra_url: str = ""                             # 需要额外下载组件时的地址
+    pre_ada: bool = False                           # 20/30 系：走 1.9+ 的 Pre-Ada 通道
+    hags: bool = False                              # 硬件加速 GPU 计划
+    dup_addons: list = field(default_factory=list)  # 同目录其它 mfgunlock addon64
+    ini: dict = field(default_factory=dict)         # MFGAdaUnlock.ini 关键设置
+    streamline_local: bool = False                  # 面板装的 MFGUnlock-Streamline
 
     @property
     def installed(self):
@@ -676,6 +697,152 @@ def detect_reshade(exe_dir):
     return False, None
 
 
+def detect_hags():
+    """硬件加速 GPU 计划：DLSS 帧生成必须开启，否则请求被接受但不产帧"""
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                            r"SYSTEM\CurrentControlSet\Control\GraphicsDrivers") as k:
+            v, _ = winreg.QueryValueEx(k, "HwSchMode")
+        return int(v) == 2
+    except Exception:
+        return False
+
+
+_HAGS = None
+
+
+def hags_on():
+    """显存/注册表读一次就够，扫描几十个游戏别重复读"""
+    global _HAGS
+    if _HAGS is None:
+        _HAGS = detect_hags()
+    return _HAGS
+
+
+# MFGAdaUnlock.ini 里我们关心的键（1.8–1.11）
+INI_KEYS = (
+    "Backend", "XmxGenerator", "XmxVulkan", "ForceMultiplier",
+    "PreAdaAdmission", "AutoEarlyLoad", "StreamlineLog", "CrashDump",
+    "DynamicMFG",
+)
+
+
+def read_ini(exe_dir):
+    """粗略读取 MFGAdaUnlock.ini 的关键设置（不落盘、不修改）"""
+    out = {}
+    p = os.path.join(exe_dir or "", INI_FILE)
+    if not os.path.isfile(p):
+        return out
+    try:
+        with open(p, "r", encoding="utf-8", errors="ignore") as f:
+            for raw in f:
+                line = raw.split(";")[0].split("#")[0].strip()
+                if "=" not in line or line.startswith("["):
+                    continue
+                k, v = line.split("=", 1)
+                k = k.strip()
+                if k in INI_KEYS:
+                    out[k] = v.strip()
+    except OSError:
+        pass
+    return out
+
+
+def dup_addons(exe_dir):
+    """同目录下除我们之外还有别的 *mfgunlock*.addon64 —— 上游会警告重复加载"""
+    if not exe_dir or not os.path.isdir(exe_dir):
+        return []
+    found = []
+    try:
+        for f in os.listdir(exe_dir):
+            low = f.lower()
+            if low.endswith(".addon64") and "mfgunlock" in low and low != ADDON_NAME:
+                found.append(f)
+    except OSError:
+        pass
+    return sorted(found)
+
+
+def has_streamline_local(exe_dir):
+    """1.10.1 面板装的 Streamline 运行时装在 MFGUnlock-Streamline 子目录"""
+    d = os.path.join(exe_dir or "", STREAMLINE_DIR)
+    return os.path.isdir(d) and bool(os.listdir(d))
+
+
+def early_load_state(exe_dir):
+    """ReShade.ini 里 [ADDON] LoadFromDllMain 的状态：True / False / None(未知)"""
+    p = os.path.join(exe_dir or "", "ReShade.ini")
+    if not os.path.isfile(p):
+        return None
+    try:
+        with open(p, "r", encoding="utf-8-sig", errors="ignore") as f:
+            txt = f.read()
+    except OSError:
+        return None
+    sec = ""
+    for raw in txt.splitlines():
+        line = raw.strip()
+        if line.startswith("["):
+            sec = line.strip("[]").upper()
+            continue
+        if sec == "ADDON" and "=" in line:
+            k, v = line.split("=", 1)
+            if k.strip().lower() == "loadfromdllmain":
+                return v.strip() not in ("0", "")
+    return None
+
+
+def ensure_early_load(exe_dir):
+    """20/30 系要求插件在游戏启动 Streamline 之前加载。
+
+    上游会在首次运行时自己写 ReShade.ini，但常因权限/段落缺失失败；
+    这里直接补 [ADDON] LoadFromDllMain=1，省掉一次白跑。返回 (ok, msg)
+    """
+    if not exe_dir or not os.path.isdir(exe_dir):
+        return False, "游戏目录不存在"
+    p = os.path.join(exe_dir, "ReShade.ini")
+    if not os.path.isfile(p):
+        return False, "没有 ReShade.ini"
+    if early_load_state(exe_dir):
+        return True, "早加载已开启"
+    try:
+        with open(p, "r", encoding="utf-8-sig", errors="ignore") as f:
+            lines = f.read().splitlines()
+    except OSError as e:
+        return False, f"读取 ReShade.ini 失败：{e}"
+
+    out, sec, done = [], "", False
+    for raw in lines:
+        line = raw.strip()
+        if line.startswith("[") and line.endswith("]"):
+            sec = line.strip("[]").upper()
+            out.append(raw)
+            if sec == "ADDON" and not done:
+                out.append("LoadFromDllMain=1")
+                done = True
+            continue
+        if sec == "ADDON" and "=" in line:
+            k = line.split("=", 1)[0].strip().lower()
+            if k == "loadfromdllmain":
+                out.append("LoadFromDllMain=1")
+                done = True
+                continue
+        out.append(raw)
+    if not done:
+        if out and out[-1].strip():
+            out.append("")
+        out += ["[ADDON]", "LoadFromDllMain=1"]
+
+    try:
+        shutil.copy2(p, p + ".bak")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write("\n".join(out) + "\n")
+    except OSError as e:
+        return False, f"写入 ReShade.ini 失败：{e}"
+    return True, "已在 ReShade.ini 开启 [ADDON] LoadFromDllMain"
+
+
 def intel_ready(folder):
     """exe 目录下的 Intel 运行时是否满足 XMX"""
     if not folder:
@@ -754,13 +921,18 @@ def _eldenring_extras(game):
 
 
 def judge(gpu, game):
-    """填 game.verdict / game.reason"""
+    """填 game.verdict / game.reason（对齐上游 1.11 的三种帧生成方式）"""
     has_g = "nvngx_dlssg.dll" in game.dlls
     has_sl = ("sl.interposer.dll" in game.dlls) or ("sl.dlss_g.dll" in game.dlls)
     has_x = "libxess_fg.dll" in game.dlls
+    has_sr = "nvngx_dlss.dll" in game.dlls
 
-    # XMX（1.8 新增）只认「运行中 exe 所在目录」里的 Intel 文件，别处的副本不算
+    # XeMFG DLSS-G（1.10 之前叫 XMX）只认「运行中 exe 所在目录」里的 Intel 文件
     game.xmx_ready = intel_ready(game.exe_dir)
+    game.pre_ada = gpu.family in ("ampere", "turing")
+    game.dup_addons = dup_addons(game.exe_dir)
+    game.ini = read_ini(game.exe_dir)
+    game.streamline_local = has_streamline_local(game.exe_dir)
     gver = game.dlssg_version()
     fam = gpu.family
 
@@ -787,50 +959,58 @@ def judge(gpu, game):
                            "或装 ERSS mod（zzz_ERSS.dll）。之后在面板开启 "
                            "DLSS-SR 输入并重启；离线游玩、关闭 EAC、开 Force VSync off。"
                            "额外组件地址：" + ELDENRING_ADDON)
-        game.xmx_ready = False       # 该游戏 XMX 不可用
+        game.xmx_ready = False       # 该游戏 XeMFG DLSS-G 不可用
         return
 
     if fam == "blackwell":
         game.verdict = V_NATIVE
         game.reason = "RTX 50 系原生支持多帧生成，无需解锁"
         return
-    if fam == "ada":
+
+    if fam in ("ada", "ampere", "turing"):
+        pre = fam in ("ampere", "turing")
+        pre_note = ("20/30 系自 1.9 起实验性支持：面板选「DLSS-G」用 NVIDIA 生成器，"
+                    "选「XeMFG DLSS-G」用 Intel 模型。首次启动插件会把自己写进 "
+                    "ReShade.ini 的 LoadFromDllMain，需再启动一次游戏；HAGS 必须开启"
+                    if pre else "")
         if has_g and gver and gver >= (310, 0):
             game.verdict = V_FULL
             slv = (game.dlls.get("sl.interposer.dll") or {}).get("ver")
-            if slv and slv < (2, 10):
-                game.reason = ("原生倍率选项可用；Streamline %s 偏旧，实际倍率可能被限制"
-                               % version_str(slv))
+            if pre:
+                parts = [pre_note]
+            elif slv and slv < (2, 10):
+                parts = ["原生倍率选项可用；Streamline %s 偏旧，实际倍率可能被限制"
+                         % version_str(slv)]
             else:
-                game.reason = "原生倍率选择器可直接出现 3x / 4x / 6x"
-            game.reason += ("；XMX 已就绪，面板里选「XeMFG via DLSS-G」延迟更低"
-                            if game.xmx_ready
-                            else "；XMX 需先在插件面板补 Intel 文件（libxess_fg + libxell）")
+                parts = ["原生倍率选择器可直接出现 3x / 4x / 6x"]
+            parts.append(
+                "XeMFG DLSS-G 已就绪（原 XMX），面板选它延迟更低；超分输出分辨率设 100%"
+                if game.xmx_ready else
+                "Intel 运行时未就位，XeMFG DLSS-G 需在插件面板补 libxess_fg + libxell")
+            game.reason = "；".join(p for p in parts if p)
             return
-        if has_g or has_sl:
+        if has_g:
             game.verdict = V_NEED_DLL
-            if has_g:
-                game.reason = "DLSS-G 版本偏旧（%s），需替换为 310.x 再安装" % version_str(gver)
-            else:
-                game.reason = "游戏未自带 nvngx_dlssg.dll，需先放入 310.x 版本"
+            game.reason = ("DLSS-G 版本偏旧（%s），多帧门限需要 310.9.x；"
+                           "点「一键安装」会替换" % version_str(gver))
             return
-        if has_x:
-            game.verdict = V_XEMFG
-            game.reason = ("无 DLSS-G，走 XeMFG 后端（需面板内装 Intel 运行时）；"
-                           "若游戏后续加入 DLSS 帧生成，1.8+ 建议改用 XMX")
+        if has_sl:
+            game.verdict = V_NEED_DLL
+            game.reason = ("自带 Streamline 但没有 nvngx_dlssg.dll：1.10 起面板"
+                           "「Add frame generation」可让插件自带 Streamline 跑 DLSS-G"
+                           "（sl.*.dll 版本必须一致），或点「一键安装」放入 310.x")
+            return
+        if has_x or has_sr:
+            game.verdict = V_FORCE
+            what = "XeSS 帧生成" if has_x else "DLSS 超分"
+            game.reason = ("无原生 DLSS 帧生成，但有 %s：面板「Add frame generation」"
+                           "可强制跑 DLSS-G / XeMFG DLSS-G；XeMFG 后端（2x–6x）也一直可用"
+                           % what)
             return
         game.verdict = V_NO
-        game.reason = "未检测到 DLSS 帧生成组件"
+        game.reason = "未检测到 DLSS / XeSS 帧生成组件"
         return
-    if fam in ("ampere", "turing"):
-        if has_g or has_sl or has_x:
-            game.verdict = V_XEMFG
-            game.reason = ("20/30 系走 XeMFG 后端（2x–6x），需面板内装 Intel 运行时；"
-                           "1.8.3 起也能通过游戏自己的 DLSS-FG 菜单尝试 XMX（实验性）")
-        else:
-            game.verdict = V_NO
-            game.reason = "未检测到 DLSS / XeSS 帧生成组件"
-        return
+
     game.verdict = V_NO
     game.reason = "未检测到可用的 NVIDIA 显卡"
 
@@ -883,6 +1063,7 @@ def _finish(game, gpu):
         game.installed_version = file_version(p) or (0, 0, 0, 0)
     else:
         game.installed_version = None
+    game.hags = hags_on()
     low = game.name.lower()
     if any(k in low for k in VERIFIED_DLSSG):
         game.verified = "dlssg"
@@ -1150,6 +1331,13 @@ def install(game, src_addon):
     msg = f"已安装到 {game.exe_dir}"
     if not game.reshade:
         msg += "\n\n注意：未检测到 ReShade（add-on 版），插件暂时不会加载。"
+    dups = dup_addons(game.exe_dir)
+    if dups:
+        msg += ("\n\n⚠ 同目录还有其它解锁插件：" + "、".join(dups) +
+                "\n1.9 起面板会警告重复加载，建议只留一个。")
+    if game.pre_ada:
+        msg += ("\n\n20/30 系首次使用：插件要在游戏启动 Streamline 之前加载，"
+                "进游戏后完全退出、再进第二次才会生效（HAGS 必须开启）。")
     return True, msg, backup
 
 
@@ -1158,6 +1346,9 @@ def uninstall(game):
     if not game.exe_dir:
         return False, "未找到游戏目录"
     existing = [n for n in MOD_FILES if os.path.isfile(os.path.join(game.exe_dir, n))]
+    # 1.10.1 起面板装的 Streamline 运行时是子文件夹，一并收进备份
+    existing += [d for d in MOD_DIRS
+                 if os.path.isdir(os.path.join(game.exe_dir, d))]
     if not existing:
         game.installed_version = None
         return False, "该目录下没有找到解锁插件文件"
@@ -1170,7 +1361,7 @@ def uninstall(game):
         except Exception as e:
             return False, f"移动 {n} 失败：{e}"
     game.installed_version = None
-    return True, "已卸载 %d 个文件，备份位于：\n%s" % (len(moved), backup)
+    return True, "已卸载 %d 项，备份位于：\n%s" % (len(moved), backup)
 
 
 def open_folder(path):
