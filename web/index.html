@@ -396,6 +396,7 @@ async function pollState() {
   setTimeout(pollState, 900);
 }
 
+let dlSample = { t: 0, done: 0, rate: 0 };
 function updateProgress(p) {
   const wasBusy = busy;
   busy = !!(p && p.busy);
@@ -404,8 +405,20 @@ function updateProgress(p) {
     document.querySelectorAll(".btn").forEach(b => { b.disabled = true; });
     if (p.total > 0) {
       bar.classList.remove("indet");
-      fill.style.width = Math.round(p.done / p.total * 100) + "%";
-      $("#pct").textContent = (p.done / 1048576).toFixed(1) + " / " + (p.total / 1048576).toFixed(1) + " MB";
+      const now = performance.now();
+      if (!dlSample.t || p.done < dlSample.done) { dlSample = { t: now, done: p.done, rate: 0 }; }
+      else if (now - dlSample.t > 700) {
+        dlSample.rate = (p.done - dlSample.done) / ((now - dlSample.t) / 1000);
+        dlSample.t = now; dlSample.done = p.done;
+      }
+      const pctVal = Math.max(0, Math.min(100, p.done / p.total * 100));
+      fill.style.width = pctVal.toFixed(1) + "%";
+      const rate = dlSample.rate > 0
+        ? " · " + (dlSample.rate > 1048576
+            ? (dlSample.rate / 1048576).toFixed(1) + " MB/s"
+            : Math.round(dlSample.rate / 1024) + " KB/s")
+        : "";
+      $("#pct").textContent = (p.done / 1048576).toFixed(1) + " / " + (p.total / 1048576).toFixed(1) + " MB" + rate;
     } else {
       bar.classList.add("indet");
       $("#pct").textContent = "";
@@ -414,6 +427,7 @@ function updateProgress(p) {
   } else {
     if (wasBusy) {
       bar.classList.remove("indet"); fill.style.width = "0"; $("#pct").textContent = "";
+      dlSample = { t: 0, done: 0, rate: 0 };
       document.querySelectorAll(".btn").forEach(b => { b.disabled = false; });
       if (p && p.kind === "done" && p.text) toast(p.text, "ok");
       if (p && p.kind === "error" && p.text) toast(p.text, "err");

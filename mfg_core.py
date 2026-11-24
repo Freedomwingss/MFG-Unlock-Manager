@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 
@@ -1174,12 +1175,22 @@ def _candidate_urls(url):
     return [url] + [m + url for m in MIRRORS]
 
 
-def _probe_speed(url, timeout=9, sample=262144):
+CHUNKS = 8          # 分段数：GitHub CDN 单连接常被限速，多连接才跑得起来
+
+
+def _request(url, extra=None, method=None):
+    h = {"User-Agent": UA, "Accept-Encoding": "identity"}
+    if extra:
+        h.update(extra)
+    return urllib.request.Request(url, headers=h, method=method)
+
+
+def _probe_speed(url, timeout=8, sample=524288):
+    """量一小段实际速度。慢源直接排除，别让 12 MB 卡在 20 KB/s 的节点上"""
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": UA,
-                                                   "Range": f"bytes=0-{sample - 1}"})
         t0 = time.time()
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with urllib.request.urlopen(_request(url, {"Range": f"bytes=0-{sample - 1}"}),
+                                    timeout=timeout) as r:
             if getattr(r, "status", 200) not in (200, 206):
                 return 0
             got = 0
@@ -1188,8 +1199,10 @@ def _probe_speed(url, timeout=9, sample=262144):
                 if not chunk:
                     break
                 got += len(chunk)
+                if time.time() - t0 > timeout:
+                    break
         dt = max(time.time() - t0, 0.01)
-        return got / dt if got > 16384 else 0
+        return got / dt if got > 32768 else 0
     except Exception:
         return 0
 
@@ -1198,40 +1211,84 @@ def rank_sources(url):
     """并发测速，返回 [(url, bytes_per_sec), ...] 由快到慢"""
     urls = _candidate_urls(url)
     speeds = [0] * len(urls)
-    threads = []
     import threading as _t
 
     def work(i, u):
         speeds[i] = _probe_speed(u)
 
+    threads = []
     for i, u in enumerate(urls):
         th = _t.Thread(target=work, args=(i, u), daemon=True)
         th.start()
         threads.append(th)
     for th in threads:
-        th.join(timeout=12)
+        th.join(timeout=10)
     pairs = [(u, s) for u, s in zip(urls, speeds) if s > 0]
     pairs.sort(key=lambda x: -x[1])
     return pairs
 
 
-def _fetch(url, tmp, expected, progress):
+def _remote_size(url, timeout=12):
+    """远端文件大小。HEAD 拿不到就用 Range: 0-0 解 Content-Range。
+    这决定了分段边界，拿错了就会 416。"""
+    try:
+        with urllib.request.urlopen(_request(url, method="HEAD"), timeout=timeout) as r:
+            n = int(r.headers.get("Content-Length") or 0)
+            if n:
+                return n
+    except Exception:
+        pass
+    try:
+        with urllib.request.urlopen(_request(url, {"Range": "bytes=0-0"}),
+                                    timeout=timeout) as r:
+            m = re.search(r"/(\d+)\s*$", r.headers.get("Content-Range") or "")
+            if m:
+                return int(m.group(1))
+    except Exception:
+        pass
+    return 0
+
+
+def _part_path(tmp, i):
+    return f"{tmp}.{i}"
+
+
+def _drop_parts(tmp, n=CHUNKS):
+    for i in range(max(n, CHUNKS)):
+        try:
+            os.remove(_part_path(tmp, i))
+        except OSError:
+            pass
+
+
+def _fetch(url, tmp, expected, progress, _retry=True):
+    """单连接下载（分段不可用时兜底）。已存在的临时文件按字节续传。"""
     have = os.path.getsize(tmp) if os.path.isfile(tmp) else 0
-    headers = {"User-Agent": UA}
-    if have:
-        headers["Range"] = f"bytes={have}-"
-    req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=30) as r:
+    if expected and have >= expected:
+        os.remove(tmp)          # 残留的旧文件比目标还大，必然 416
+        have = 0
+    headers = {"Range": f"bytes={have}-"} if have else {}
+    try:
+        r = urllib.request.urlopen(_request(url, headers), timeout=30)
+    except urllib.error.HTTPError as e:
+        if e.code == 416 and _retry:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            return _fetch(url, tmp, expected, progress, _retry=False)
+        raise RuntimeError(f"HTTP {e.code}：{e.reason}")
+    with r:
         status = getattr(r, "status", 200)
         if have and status != 206:
-            have = 0  # 服务器不支持续传
+            have = 0                       # 服务器不认续传，从头写
         total = int(r.headers.get("Content-Length") or 0) + have
         if not total:
             total = expected
         mode = "ab" if have else "wb"
         done = have
-        stall_since = time.time()
-        last_report = 0
+        last_report = 0.0
+        last_data = time.time()
         with open(tmp, mode) as f:
             while True:
                 chunk = r.read(65536)
@@ -1239,19 +1296,19 @@ def _fetch(url, tmp, expected, progress):
                     break
                 f.write(chunk)
                 done += len(chunk)
+                last_data = time.time()
                 now = time.time()
-                if progress and now - last_report > 0.12:
-                    progress(done, total)
+                if progress and now - last_report > 0.1:
+                    progress(min(done, total or done), total or done)
                     last_report = now
-                if now - stall_since > 20:
+                if now - last_data > 20:
                     raise RuntimeError("下载停滞")
-                stall_since = now
         if progress:
-            progress(done, total)
+            progress(min(done, total or done), total or done)
 
 
-def _fetch_chunked(url, tmp, total, progress, nchunks=6):
-    """多连接分段下载（利用 Range 并发提速）"""
+def _fetch_chunked(url, tmp, total, progress, nchunks=CHUNKS):
+    """多连接分段下载。每段独立重试，越界(416)就删掉重下，绝不拼半条数据。"""
     import threading as _t
 
     if not total:
@@ -1264,71 +1321,101 @@ def _fetch_chunked(url, tmp, total, progress, nchunks=6):
         if s <= e:
             ranges.append((i, s, e))
 
-    state = {"done": 0}
+    # 旧分段长度对不上（上次是别的源/别的版本）就丢掉，否则续传必 416
+    for i, s, e in ranges:
+        fn = _part_path(tmp, i)
+        if os.path.isfile(fn) and os.path.getsize(fn) > (e - s + 1):
+            try:
+                os.remove(fn)
+            except OSError:
+                pass
+
     lock = _t.Lock()
     errors = []
 
+    def done_now():
+        n = 0
+        for i, s, e in ranges:
+            fn = _part_path(tmp, i)
+            if os.path.isfile(fn):
+                n += min(os.path.getsize(fn), e - s + 1)
+        return n
+
     def worker(i, start, end):
-        fn = f"{tmp}.{i}"
-        try:
-            have = os.path.getsize(fn) if os.path.isfile(fn) else 0
-            s = start + have
-            if s > end:
-                with lock:
-                    state["done"] += (end - start + 1)
-                return
-            req = urllib.request.Request(
-                url, headers={"User-Agent": UA, "Range": f"bytes={s}-{end}"})
-            with urllib.request.urlopen(req, timeout=30) as r:
-                if getattr(r, "status", 200) != 206:
-                    raise RuntimeError("服务器不支持分段")
-                with open(fn, "ab") as f:
-                    while True:
-                        chunk = r.read(65536)
-                        if not chunk:
-                            break
-                        f.write(chunk)
-                        with lock:
-                            state["done"] += len(chunk)
-                            d = state["done"]
-                        if progress:
-                            progress(d, total)
-        except Exception as e:
-            errors.append(e)
+        fn = _part_path(tmp, i)
+        want = end - start + 1
+        for attempt in range(3):
+            try:
+                have = os.path.getsize(fn) if os.path.isfile(fn) else 0
+                if have >= want:
+                    return
+                req = _request(url, {"Range": f"bytes={start + have}-{end}"})
+                with urllib.request.urlopen(req, timeout=30) as r:
+                    if getattr(r, "status", 200) != 206:
+                        raise RuntimeError("该源不支持分段")
+                    with open(fn, "ab") as f:
+                        while True:
+                            chunk = r.read(65536)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                            if progress:
+                                with lock:
+                                    d = done_now()
+                                progress(min(d, total), total)
+                if os.path.getsize(fn) >= want:
+                    return
+                raise RuntimeError("分段短读")
+            except urllib.error.HTTPError as e:
+                errors.append(e)
+                try:
+                    os.remove(fn)      # 416 / 403：这段的 Range 不被接受，清掉重来
+                except OSError:
+                    pass
+                if e.code in (403, 404, 410):
+                    return
+            except Exception as e:
+                errors.append(e)
+        errors.append(RuntimeError(f"分段 {i} 三次都没下完"))
 
     threads = [_t.Thread(target=worker, args=r, daemon=True) for r in ranges]
     for th in threads:
         th.start()
     for th in threads:
-        th.join()
-    if errors:
-        raise errors[0]
+        th.join(timeout=180)
+    for th in threads:
+        if th.is_alive():
+            raise RuntimeError("分段下载超时")
 
+    # 拼装前逐段核对，短了就地失败，别把坏文件交给安装
+    for i, s, e in ranges:
+        fn = _part_path(tmp, i)
+        if not os.path.isfile(fn) or os.path.getsize(fn) != (e - s + 1):
+            raise RuntimeError(f"分段 {i} 不完整")
     with open(tmp, "wb") as out:
         for i, _s, _e in ranges:
-            fn = f"{tmp}.{i}"
+            fn = _part_path(tmp, i)
             with open(fn, "rb") as f:
                 shutil.copyfileobj(f, out)
             os.remove(fn)
-
-
-def _cleanup_parts(tmp, nchunks=6):
-    for i in range(nchunks):
-        p = f"{tmp}.{i}"
-        try:
-            if os.path.isfile(p):
-                os.remove(p)
-        except OSError:
-            pass
+    if progress:
+        progress(total, total)
 
 
 def _fetch_any(url, tmp, expected, progress):
-    try:
-        _fetch_chunked(url, tmp, expected, progress)
-        return
-    except Exception:
-        _cleanup_parts(tmp)
-    _fetch(url, tmp, expected, progress)
+    """先问远端要真实大小，再决定分段；两种模式都失败就抛错，交给下一个源"""
+    size = _remote_size(url) or expected
+    if size and (not expected or size == expected):
+        try:
+            _fetch_chunked(url, tmp, size, progress, CHUNKS)
+            return
+        except Exception:
+            _drop_parts(tmp)
+            try:
+                os.remove(tmp)      # 分段没写 tmp，残留的是旧版的半成品，续传会拼错
+            except OSError:
+                pass
+    _fetch(url, tmp, size or expected, progress)
 
 
 def download_release(rel, progress=None):
@@ -1337,9 +1424,23 @@ def download_release(rel, progress=None):
     os.makedirs(cache_dir, exist_ok=True)
     dst = os.path.join(cache_dir, ADDON_NAME)
     if os.path.isfile(dst) and (not rel.size or os.path.getsize(dst) == rel.size):
-        return dst
+        # 缓存也要对摘要：上次断网/被劫持写坏的包不能再拿去装
+        if not rel.digest or sha256_of(dst) == rel.digest:
+            return dst
+        try:
+            os.remove(dst)
+        except OSError:
+            pass
 
     tmp = dst + ".part"
+    # 上次失败留下的半成品：大小对不上就清掉，否则 Range 越界 → 416
+    if os.path.isfile(tmp) and rel.size and os.path.getsize(tmp) > rel.size:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+    _drop_parts(tmp)
+
     ranked = rank_sources(rel.url)
     if not ranked:
         raise RuntimeError("所有下载源都不可达，请检查网络或改用「本地安装」")
@@ -1348,18 +1449,19 @@ def download_release(rel, progress=None):
         try:
             _fetch_any(url, tmp, rel.size, progress)
             if rel.size and os.path.getsize(tmp) != rel.size:
-                raise RuntimeError("文件大小不符")
-            if rel.digest:
-                if sha256_of(tmp) != rel.digest:
-                    try:
-                        os.remove(tmp)
-                    except OSError:
-                        pass
-                    raise RuntimeError("校验失败（该源文件被改动）")
+                raise RuntimeError(f"大小不符（{os.path.getsize(tmp)}/{rel.size}）")
+            if rel.digest and sha256_of(tmp) != rel.digest:
+                raise RuntimeError("校验失败（该源文件被改动）")
             os.replace(tmp, dst)
             return dst
         except Exception as e:
             last_err = e
+            for f in (tmp,):
+                try:
+                    os.remove(f)
+                except OSError:
+                    pass
+            _drop_parts(tmp)
             continue
     raise RuntimeError(f"下载失败：{last_err}")
 
