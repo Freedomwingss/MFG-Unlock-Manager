@@ -57,7 +57,7 @@ APP_DATA = os.path.join(_base_dir(), "data")
 APP_VERSION = _read_version()
 CACHE_DIR = os.path.join(APP_DATA, "cache")
 # 改动主程序/dll 识别逻辑时 +1，旧缓存自动失效
-CACHE_VERSION = 6
+CACHE_VERSION = 7
 BACKUP_DIR = os.path.join(APP_DATA, "backup")
 CONFIG_PATH = os.path.join(APP_DATA, "config.json")
 
@@ -89,6 +89,9 @@ INI_FILE = "MFGAdaUnlock.ini"
 # 上游 1.9+ 的三种帧生成方式（面板里的名字）
 METHODS = ("DLSS-G", "XeMFG", "XeMFG DLSS-G")
 
+# 1.12 的 DLSS 5 神经渲染：上游不提供、也不下载这个运行时，玩家自备
+NR_DLL = "nvngx_dlssnr.dll"
+
 DLL_TARGETS = (
     "nvngx_dlssg.dll",
     "sl.dlss_g.dll",
@@ -96,6 +99,7 @@ DLL_TARGETS = (
     "libxess_fg.dll",
     "libxell.dll",
     "nvngx_dlss.dll",        # DLSS 超分：1.10 起「Add frame generation」靠它喂帧生成
+    NR_DLL,                  # DLSS 5 神经渲染运行时（1.12）
 )
 
 # XeMFG DLSS-G（1.10 之前的名字叫 XMX）要求的 Intel 运行时版本
@@ -324,6 +328,8 @@ class Game:
     dup_addons: list = field(default_factory=list)  # 同目录其它 mfgunlock addon64
     ini: dict = field(default_factory=dict)         # MFGAdaUnlock.ini 关键设置
     streamline_local: bool = False                  # 面板装的 MFGUnlock-Streamline
+    nr_path: str = ""                               # DLSS 5 神经渲染运行时位置
+    other_dlss5: list = field(default_factory=list) # 同目录其它 DLSS 5 插件
 
     @property
     def installed(self):
@@ -727,6 +733,18 @@ INI_KEYS = (
     "DynamicMFG",
 )
 
+# 1.11/1.12 新增段落：同名键（Enabled、Scale…）只在指定段落里才算
+INI_SECTION_KEYS = {
+    "DLSS5": ("Enabled", "RuntimePath", "Network", "Style", "Intensity",
+              "ProtectHud", "Scale", "Passes", "HookPoint", "Motion",
+              "TaaFinder", "Stability", "PaperWhite", "Coexist", "VramMargin"),
+    "OVERLAY": ("PerfOverlay", "PerfOverlayLevel", "PerfOverlayKey",
+                "PerfOverlayModifier"),
+}
+
+# NR 在哪儿跑（[DLSS5] HookPoint）
+NR_HOOKPOINT = {"0": "自动", "1": "只在游戏超分之后", "2": "Present 之前"}
+
 
 def read_ini(exe_dir):
     """粗略读取 MFGAdaUnlock.ini 的关键设置（不落盘、不修改）"""
@@ -736,14 +754,22 @@ def read_ini(exe_dir):
         return out
     try:
         with open(p, "r", encoding="utf-8", errors="ignore") as f:
+            sec = ""
             for raw in f:
                 line = raw.split(";")[0].split("#")[0].strip()
-                if "=" not in line or line.startswith("["):
+                if not line:
+                    continue
+                if line.startswith("[") and line.endswith("]"):
+                    sec = line.strip("[]").strip().upper()
+                    continue
+                if "=" not in line:
                     continue
                 k, v = line.split("=", 1)
-                k = k.strip()
+                k, v = k.strip(), v.strip()
                 if k in INI_KEYS:
-                    out[k] = v.strip()
+                    out[k] = v
+                elif sec in INI_SECTION_KEYS and k in INI_SECTION_KEYS[sec]:
+                    out[f"{sec}.{k}"] = v
     except OSError:
         pass
     return out
@@ -762,6 +788,37 @@ def dup_addons(exe_dir):
     except OSError:
         pass
     return sorted(found)
+
+
+def other_dlss5_addons(exe_dir):
+    """别的 DLSS 5 / NR 插件。1.12 起本插件的 NR 默认让位给它们（Coexist=0）"""
+    if not exe_dir or not os.path.isdir(exe_dir):
+        return []
+    found = []
+    try:
+        for f in os.listdir(exe_dir):
+            low = f.lower()
+            if not low.endswith(".addon64") or low == ADDON_NAME:
+                continue
+            if any(k in low for k in ("dlss5", "dlssnr", "dlss_nr", "dlss-5")):
+                found.append(f)
+    except OSError:
+        pass
+    return sorted(found)
+
+
+def find_nr_runtime(exe_dir, ini=None):
+    """DLSS 5 运行时：exe 目录优先，其次 [DLSS5] RuntimePath，最后扫到的副本"""
+    if not exe_dir:
+        return ""
+    p = os.path.join(exe_dir, NR_DLL)
+    if os.path.isfile(p):
+        return p
+    rp = (ini or {}).get("DLSS5.RuntimePath") or ""
+    rp = rp.strip().strip('"')
+    if rp and os.path.isfile(rp):
+        return rp
+    return ""
 
 
 def has_streamline_local(exe_dir):
@@ -933,6 +990,8 @@ def judge(gpu, game):
     game.dup_addons = dup_addons(game.exe_dir)
     game.ini = read_ini(game.exe_dir)
     game.streamline_local = has_streamline_local(game.exe_dir)
+    game.other_dlss5 = other_dlss5_addons(game.exe_dir)
+    game.nr_path = find_nr_runtime(game.exe_dir, game.ini)
     gver = game.dlssg_version()
     fam = gpu.family
 

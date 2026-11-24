@@ -551,12 +551,18 @@ function renderDetail() {
           ? (g.xmxReady ? "就绪，面板里选「XeMFG DLSS-G」；超分输出分辨率要设 100%" : "缺 Intel 文件，点「一键安装」自动补齐（游戏内有合适版本时）")
           : (g.verdict === "xemfg" || g.verdict === "force" ? "该游戏走 XeMFG 后端（2x–6x）" : "不适用")
       }</td></tr>
+      <tr><td data-tip="1.12 新增：在游戏自己的画面上跑 NVIDIA DLSS 5 神经渲染<br>上游不提供运行时，需自备 nvngx_dlssnr.dll 放到 exe 目录<br>只在 D3D12 / Vulkan 生效，开启后必须重启游戏">DLSS 5 神经渲染</td><td class="${g.nr ? "v-ok" : "v-mut"}">${
+        g.nr
+          ? "运行时 v" + (g.nrVer || "?") + " · " + (g.nrOn ? "面板已开启（" + g.nrHook + "）" : "面板未开启")
+          : "未就绪 · 自备 nvngx_dlssnr.dll 放到 exe 目录"
+      }</td></tr>
       <tr><td data-tip="硬件加速 GPU 计划。DLSS 帧生成必须开启，否则游戏接请求但不产帧">HAGS</td><td class="${g.hags ? "v-ok" : "v-bad"}">${g.hags ? "已开启" : "未开启 · 设置 → 系统 → 显示 → 显示卡 → 更改默认图形设置"}</td></tr>
       ${g.preAda ? `<tr><td data-tip="20/30 系要求插件在游戏启动 Streamline 之前加载">20/30 系</td><td class="v-warn">实验性支持 · 首次需启动游戏两次</td></tr>` : ""}
       <tr><td>主程序</td><td class="${g.arch === "x64" ? "v-ok" : "v-bad"}">${g.arch || "未知"}</td></tr>
       <tr><td>ReShade 宿主</td><td>${rsLine}</td></tr>
       ${g.verified ? `<tr><td>作者实测</td><td class="v-mut">在 README 已测列表中</td></tr>` : ""}
     </table>
+    ${(g.otherDlss5 && g.otherDlss5.length) ? `<div class="reason" style="margin-top:.5rem"><span class="v-warn">⚠ 其它 DLSS 5 插件：</span>${escapeHtml(g.otherDlss5.join("、"))}<br>本插件的 NR 默认让位给它，不会同时跑。</div>` : ""}
     ${(g.dupAddons && g.dupAddons.length) ? `<div class="reason" style="margin-top:.6rem"><span class="v-warn">⚠ 同目录还有其它解锁插件：</span>${escapeHtml(g.dupAddons.join("、"))}<br>1.9 起插件面板会警告重复加载，建议只留一个。</div>` : ""}
     <table class="checks" style="margin-top:.95rem">
       <tr><td>MFG 版本</td><td class="${g.installed ? (g.upToDate ? "v-ok" : "v-warn") : "v-mut"}">${

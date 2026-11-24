@@ -234,6 +234,11 @@ class State:
             "dupAddons": list(g.dup_addons or []),
             "slLocal": bool(g.streamline_local),
             "ini": dict(g.ini or {}),
+            "nr": bool(g.nr_path),
+            "nrVer": vstr(core.file_version(g.nr_path)) if g.nr_path else "",
+            "nrOn": str((g.ini or {}).get("DLSS5.Enabled", "0")).strip() == "1",
+            "nrHook": core.NR_HOOKPOINT.get(str((g.ini or {}).get("DLSS5.HookPoint", "0")).strip(), "自动"),
+            "otherDlss5": list(g.other_dlss5 or []),
             "extraUrl": g.extra_url,
             "extraName": "EldenRingDLSS" if g.extra_url else "",
             "path": g.path,
@@ -439,7 +444,7 @@ def boot_env():
 
     # 只在装好后第一次启动时扫盘；之后直接读上次的快照，保护硬盘也更快
     snap = ST.cfg.get("snapshot")
-    if snap and ST.cfg.get("snapshot_rule", 1) < 3:
+    if snap and ST.cfg.get("snapshot_rule", 1) < 4:
         snap = None            # 判定规则升级（艾尔登法环），旧快照需重算
     if snap and ST.cfg.get("snapshot_gpu") and ST.cfg.get("snapshot_gpu") != ST.gpu.family:
         snap = None            # 换了显卡 / 上次没读到显卡，快照不可信
@@ -466,6 +471,7 @@ def _snapshot():
             "xmx_ready": g.xmx_ready, "pre_ada": g.pre_ada, "hags": g.hags,
             "dup_addons": list(g.dup_addons or []), "ini": dict(g.ini or {}),
             "streamline_local": g.streamline_local,
+            "nr_path": g.nr_path, "other_dlss5": list(g.other_dlss5 or []),
             "extra_url": g.extra_url,
             "reshade": g.reshade,
             "dlls": {k: {"path": v.get("path", ""),
@@ -498,6 +504,8 @@ def _restore(snap):
         g.dup_addons = list(d.get("dup_addons") or [])
         g.ini = dict(d.get("ini") or {})
         g.streamline_local = bool(d.get("streamline_local"))
+        g.nr_path = d.get("nr_path", "")
+        g.other_dlss5 = list(d.get("other_dlss5") or [])
         g.reshade = bool(d.get("reshade"))
         g.dlls = {k: {"path": v.get("path", ""),
                       "ver": tuple(v["ver"]) if v.get("ver") else None}
@@ -578,7 +586,7 @@ def do_scan():
         ST.cfg["cache"] = cache
         ST.cfg["snapshot"] = _snapshot()
         ST.cfg["snapshot_gpu"] = ST.gpu.family
-        ST.cfg["snapshot_rule"] = 3
+        ST.cfg["snapshot_rule"] = 4
         core.save_config(ST.cfg)
     except Exception:
         traceback.print_exc()
@@ -1167,12 +1175,36 @@ def build_report(game):
         add("  ⚠ 重复插件  " + "、".join(dups))
     add("")
 
+    add("[DLSS 5 神经渲染]")
+    nr_on = str((mfg_ini or {}).get("DLSS5.Enabled", "0")).strip() == "1"
+    if game.nr_path:
+        add(f"  运行时      {core.NR_DLL}  v{vstr(core.file_version(game.nr_path)) or '?'}")
+        try:
+            rel = os.path.relpath(game.nr_path, exe_dir)
+            if not rel.startswith(".."):
+                add(f"  位置        {rel}")
+            else:
+                add(f"  位置        {game.nr_path}（[DLSS5] RuntimePath）")
+        except ValueError:
+            add(f"  位置        {game.nr_path}")
+    else:
+        add("  运行时      未就绪 —— 上游不提供、也不下载，需自备 "
+            + core.NR_DLL + " 放到 exe 目录")
+    add(f"  开关        {'已开启（改这个值要重启游戏）' if nr_on else '未开启（默认关，[DLSS5] Enabled=0）'}")
+    add("  运行位置    " + core.NR_HOOKPOINT.get(
+        str((mfg_ini or {}).get("DLSS5.HookPoint", "0")).strip(), "自动"))
+    add("  前提        仅 D3D12 / Vulkan；D3D11 不支持。开启后必须重启游戏，"
+        "否则插件来不及把它放在帧生成之前")
+    if game.other_dlss5:
+        add("  ⚠ 其它插件  " + "、".join(game.other_dlss5) +
+            "  —— 本插件的 NR 默认让位（[DLSS5] Coexist=0）")
+    add("")
+
     add("[插件设置]")
     add(f"  文件        {core.INI_FILE}" + ("" if mfg_ini else "（不存在，插件用默认值）"))
     if mfg_ini:
-        for k in core.INI_KEYS:
-            if k in mfg_ini:
-                add(f"  {k:<14}{mfg_ini[k]}")
+        for k, v in mfg_ini.items():
+            add(f"  {k:<22}{v}")
     else:
         add("  提示        面板里改设置会写进这个文件；本工具只读不改")
     add("")
@@ -1256,6 +1288,22 @@ def build_report(game):
     if "closed unexpectedly" in all_txt:
         tips.append("「上次会话异常结束」是 1.11 之前的误报（Unreal / 反作弊进程强杀导致），"
                     "更新插件后消失，不影响实际帧生成")
+    if not game.nr_path:
+        tips.append("要 DLSS 5 神经渲染：把自备的 " + core.NR_DLL +
+                    " 放到 exe 目录（上游不提供下载），再到面板 DLSS 5 页打开并重启游戏")
+    elif not nr_on:
+        tips.append("DLSS 5 运行时已就位，但面板里还没开：DLSS 5 页打开 "
+                    "「DLSS 5 neural rendering」，然后重启游戏一次")
+    if game.other_dlss5:
+        tips.append("同目录有其它 DLSS 5 插件（" + "、".join(game.other_dlss5) +
+                    "）：本插件的 NR 默认让位给它，不会同时跑；要用本插件的就移除另一个，"
+                    "或把 [DLSS5] Coexist 设为 1")
+    if "nvngx_dlssnr.dll not found" in all_txt:
+        tips.append("日志里 nvngx_dlssnr.dll not found：把运行时放到 exe 目录，"
+                    "或把 [DLSS5] RuntimePath 设成它的完整路径")
+    if "device loss" in all_txt.lower() or "device removed" in all_txt.lower():
+        tips.append("出现设备丢失（device loss / device removed）：设 [Diagnostics] ForceDRED=1 "
+                    "复现一次，日志里会带上未完成的命令队列和页错误，连同 ReShade.log 发给上游")
     if "architecture gate refused" in all_txt and game.verdict == core.V_FULL:
         tips.append("出现 architecture gate refused：DLSS-G 的架构门被拒，"
                     "倍率通常仍可用；若倍率异常，把 DLSS-G 更新到 310.x 再试")
@@ -1269,6 +1317,7 @@ def build_report(game):
     add("  插件自带性能覆盖层：Shift+F10 开关（General → Performance overlay）")
     add("  Minimal 看输出/游戏帧率，Standard 加帧时间与 1% low，Full 加曲线与延迟")
     add("  覆盖层不开时不产生任何开销")
+    add("  DLSS 5：Ctrl+F8 开关神经渲染，Ctrl+F7 左右对比；覆盖层会多一行 NR 耗时")
     add("")
 
     add("[环境]")

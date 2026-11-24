@@ -1,4 +1,4 @@
-# MFG Unlock Manager · v1.0.7
+# MFG Unlock Manager · v1.0.8
 
 给 Steam 游戏一键安装 / 卸载 **MFGAdaUnlock-RenoDx**（RTX 40 系解锁 DLSS 3×–6× 多帧生成）的本地工具，Web 界面。
 
@@ -54,6 +54,17 @@
 | **XeMFG DLSS-G**（原 XMX） | Intel XeFG 多帧模型 | NVIDIA DLSS-G（Reflex / flip metering） | **有原生帧生成时官方推荐**，延迟最低、Alt+Tab 更稳 |
 
 管理器检查 Intel 运行时（`libxess_fg >= 1.3.1.78`、`libxell >= 1.3.2.10`）是否在 **exe 目录**，详情页显示「XeMFG DLSS-G」状态。缺文件进游戏在插件面板点 **Install / update files** 补齐——游戏更新或 Steam 校验会覆盖这两个 DLL，**每次游戏更新后要重装一次**。
+
+### 同步到 1.12 的部分
+
+| 变化 | 管理器怎么处理 |
+|---|---|
+| DLSS 5 神经渲染（NR） | 只检测、不代下载：找 exe 目录的 `nvngx_dlssnr.dll`（或 `[DLSS5] RuntimePath`），详情页与报告给出运行时版本、面板开关状态、运行位置 |
+| 需要重启才生效 | 详情页与建议里写明「开启后必须重启游戏」，D3D11 不支持 |
+| 与其它 DLSS 5 插件互斥（`Coexist=0` 默认让位） | 扫描同目录 `*dlss5*` / `*dlssnr*` 的 addon64，标黄提示；报告单独一行 |
+| `%LOCALAPPDATA%\MFGUnlock` 辅助文件 | 上游自己写，本工具不动、卸载也不删 |
+| `[Diagnostics] ForceDRED=1`（设备丢失时记录未完成命令队列） | 报告检测到 device loss 后给出发给上游的步骤 |
+| 面板键 `[DLSS5]` / `[Overlay]` | INI 解析改成按段落取值（同名键 Enabled、Scale 等不会串段），报告按 `段落.键` 列出 |
 
 ### 同步到 1.11 的部分
 
