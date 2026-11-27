@@ -1,4 +1,4 @@
-# MFG Unlock Manager · v1.0.8
+# MFG Unlock Manager · v1.0.10
 
 给 Steam 游戏一键安装 / 卸载 **MFGAdaUnlock-RenoDx**（RTX 40 系解锁 DLSS 3×–6× 多帧生成）的本地工具，Web 界面。
 
@@ -64,7 +64,8 @@
 | 与其它 DLSS 5 插件互斥（`Coexist=0` 默认让位） | 扫描同目录 `*dlss5*` / `*dlssnr*` 的 addon64，标黄提示；报告单独一行 |
 | `%LOCALAPPDATA%\MFGUnlock` 辅助文件 | 上游自己写，本工具不动、卸载也不删 |
 | `[Diagnostics] ForceDRED=1`（设备丢失时记录未完成命令队列） | 报告检测到 device loss 后给出发给上游的步骤 |
-| 面板键 `[DLSS5]` / `[Overlay]` | INI 解析改成按段落取值（同名键 Enabled、Scale 等不会串段），报告按 `段落.键` 列出 |
+| 面板键 `[DLSS5]` / `[Overlay]` / `[Adapters]` | INI 解析改成按段落取值（同名键 Enabled、Scale 等不会串段），报告按 `段落.键` 列出 |
+| 1.12.1：`[DLSS5] Budget`（GPU 时间预算）、`Silhouettes`（轮廓让位） | 纳入报告设置表；`[Adapters] DlssSr` 一并显示，方便确认「无原生帧生成」的游戏有没有开 DLSS-SR 输入 |
 
 ### 同步到 1.11 的部分
 
@@ -96,6 +97,8 @@
 | 不支持 / 50 系原生 | 不显示（已过滤） | — |
 
 判定：找主程序（`platform\steam`、`Binaries\Win64` 优先，再按体积 + 名字相似度）→ 读 PE 版本 → 扫 `nvngx_dlssg.dll` / `sl.*.dll` / `libxess_fg.dll` / `nvngx_dlss.dll` → 结合显卡架构。
+
+**D3D11 提醒**：插件只支持 D3D12 / Vulkan。管理器解析 exe 的导入表，若只有 `d3d11.dll` 而没有 `d3d12.dll` / `vulkan-1.dll`，会在判定理由后附一句提醒。不做硬判定——UE5、RE Engine 这类引擎常把 `d3d12.dll` 延迟加载，静态导入里只看得见 d3d11。
 
 ## ReShade 精简宿主
 

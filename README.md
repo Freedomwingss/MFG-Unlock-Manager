@@ -103,4 +103,4 @@ MIT。随便用、改、分发，保留版权声明即可。
 
 ---
 
-<sub>v1.0.9 · 技术细节见 [docs/TECHNICAL.md](docs/TECHNICAL.md)</sub>
+<sub>v1.0.10 · 技术细节见 [docs/TECHNICAL.md](docs/TECHNICAL.md)</sub>

@@ -162,6 +162,75 @@ def version_str(v):
     return ".".join(str(x) for x in v[:3])
 
 
+def pe_imports(path):
+    """主程序静态导入的 DLL 名（小写集合）。用来判断游戏是 D3D11 还是 D3D12/Vulkan。"""
+    out = set()
+    try:
+        with open(path, "rb") as f:
+            head = f.read(4096)
+            if head[:2] != b"MZ":
+                return out
+            pe = struct.unpack_from("<I", head, 0x3C)[0]
+            if pe + 24 > len(head):
+                f.seek(pe)
+                head = f.read(4096)
+                pe = 0
+            if head[pe:pe + 4] != b"PE\0\0":
+                return out
+            nsec = struct.unpack_from("<H", head, pe + 6)[0]
+            opt_size = struct.unpack_from("<H", head, pe + 20)[0]
+            opt = pe + 24
+            if opt + opt_size > len(head):
+                f.seek(opt)
+                head = f.read(opt_size + 64)
+                opt = 0
+            magic = struct.unpack_from("<H", head, opt)[0]
+            dd = opt + (112 if magic == 0x20B else 96)
+            imp_rva = struct.unpack_from("<I", head, dd + 8)[0]
+            if not imp_rva:
+                return out
+            st = opt + opt_size
+            if st + nsec * 40 > len(head):
+                f.seek(st)
+                head = f.read(nsec * 40)
+                st = 0
+            secs = []
+            for i in range(nsec):
+                base = st + i * 40
+                va = struct.unpack_from("<I", head, base + 12)[0]
+                raw_size = struct.unpack_from("<I", head, base + 16)[0]
+                raw_ptr = struct.unpack_from("<I", head, base + 20)[0]
+                secs.append((va, max(raw_size, 1), raw_ptr))
+
+            def off(rva):
+                for va, raw_size, raw_ptr in secs:
+                    if va <= rva < va + raw_size:
+                        return raw_ptr + (rva - va)
+                return 0
+
+            pos = off(imp_rva)
+            for _ in range(512):
+                if not pos:
+                    break
+                f.seek(pos)
+                desc = f.read(20)
+                if len(desc) < 20:
+                    break
+                name_rva = struct.unpack_from("<I", desc, 12)[0]
+                if not name_rva:
+                    break
+                np = off(name_rva)
+                if np:
+                    f.seek(np)
+                    name = f.read(256).split(b"\0", 1)[0].decode("ascii", "ignore").lower()
+                    if name:
+                        out.add(name)
+                pos += 20
+    except Exception:
+        return out
+    return out
+
+
 def pe_machine(path):
     """'x64' / 'x86' / 'arm64' / None"""
     try:
@@ -329,6 +398,7 @@ class Game:
     dup_addons: list = field(default_factory=list)  # 同目录其它 mfgunlock addon64
     ini: dict = field(default_factory=dict)         # MFGAdaUnlock.ini 关键设置
     streamline_local: bool = False                  # 面板装的 MFGUnlock-Streamline
+    maybe_d3d11: bool = False                       # 静态导入只有 d3d11（可能是延迟加载 d3d12）
     nr_path: str = ""                               # DLSS 5 神经渲染运行时位置
     other_dlss5: list = field(default_factory=list) # 同目录其它 DLSS 5 插件
 
@@ -736,11 +806,13 @@ INI_KEYS = (
 
 # 1.11/1.12 新增段落：同名键（Enabled、Scale…）只在指定段落里才算
 INI_SECTION_KEYS = {
-    "DLSS5": ("Enabled", "RuntimePath", "Network", "Style", "Intensity",
+    "dlss5": ("Enabled", "RuntimePath", "Network", "Style", "Intensity",
               "ProtectHud", "Scale", "Passes", "HookPoint", "Motion",
-              "TaaFinder", "Stability", "PaperWhite", "Coexist", "VramMargin"),
-    "OVERLAY": ("PerfOverlay", "PerfOverlayLevel", "PerfOverlayKey",
+              "TaaFinder", "Stability", "PaperWhite", "Coexist", "VramMargin",
+              "Budget", "Silhouettes"),          # Budget/Silhouettes 为 1.12.1 新增
+    "overlay": ("PerfOverlay", "PerfOverlayLevel", "PerfOverlayKey",
                 "PerfOverlayModifier"),
+    "adapters": ("DlssSr", "FidelityFX"),        # XeMFG 的输入开关
 }
 
 # NR 在哪儿跑（[DLSS5] HookPoint）
@@ -761,7 +833,7 @@ def read_ini(exe_dir):
                 if not line:
                     continue
                 if line.startswith("[") and line.endswith("]"):
-                    sec = line.strip("[]").strip().upper()
+                    sec = line.strip("[]").strip()
                     continue
                 if "=" not in line:
                     continue
@@ -769,7 +841,7 @@ def read_ini(exe_dir):
                 k, v = k.strip(), v.strip()
                 if k in INI_KEYS:
                     out[k] = v
-                elif sec in INI_SECTION_KEYS and k in INI_SECTION_KEYS[sec]:
+                elif k in INI_SECTION_KEYS.get(sec.lower(), ()):
                     out[f"{sec}.{k}"] = v
     except OSError:
         pass
@@ -815,7 +887,11 @@ def find_nr_runtime(exe_dir, ini=None):
     p = os.path.join(exe_dir, NR_DLL)
     if os.path.isfile(p):
         return p
-    rp = (ini or {}).get("DLSS5.RuntimePath") or ""
+    rp = ""
+    for k, v in (ini or {}).items():
+        if k.lower().endswith(".runtimepath"):
+            rp = v
+            break
     rp = rp.strip().strip('"')
     if rp and os.path.isfile(rp):
         return rp
@@ -1022,6 +1098,16 @@ def judge(gpu, game):
         game.xmx_ready = False       # 该游戏 XeMFG DLSS-G 不可用
         return
 
+    # 只认 D3D12 / Vulkan：D3D11 游戏插件完全没法插手（如上古卷轴5、
+    # 十字军之王3）。不少 DX12 游戏是延迟加载 d3d12.dll，所以只在
+    # 「明确导入 d3d11 且没有 d3d12/vulkan」时才判定。
+    # 只支持 D3D12 / Vulkan。但 UE/RE 等引擎常常延迟加载 d3d12，
+    # 静态导入里只有 d3d11 —— 所以这里只做标记，交给 _finish 加一句提醒，
+    # 不直接判定不支持，免得把能用的游戏藏起来。
+    imps = pe_imports(game.exe)
+    game.maybe_d3d11 = ("d3d11.dll" in imps and "d3d12.dll" not in imps
+                        and "vulkan-1.dll" not in imps)
+
     if fam == "blackwell":
         game.verdict = V_NATIVE
         game.reason = "RTX 50 系原生支持多帧生成，无需解锁"
@@ -1064,8 +1150,9 @@ def judge(gpu, game):
             game.verdict = V_FORCE
             what = "XeSS 帧生成" if has_x else "DLSS 超分"
             game.reason = ("无原生 DLSS 帧生成，但有 %s：面板「Add frame generation」"
-                           "可强制跑 DLSS-G / XeMFG DLSS-G；XeMFG 后端（2x–6x）也一直可用"
-                           % what)
+                           "可强制跑 DLSS-G / XeMFG DLSS-G；没有 Streamline 的游戏改用 "
+                           "XeMFG 后端 + 面板「DLSS-SR input（实验性）」。注意只支持 "
+                           "D3D12 / Vulkan，D3D11 游戏（如上古卷轴5）用不了" % what)
             return
         game.verdict = V_NO
         game.reason = "未检测到 DLSS / XeSS 帧生成组件"
@@ -1130,6 +1217,9 @@ def _finish(game, gpu):
     elif any(k in low for k in VERIFIED_XEMFG):
         game.verified = "xemfg"
     judge(gpu, game)
+    if game.maybe_d3d11 and game.verdict in (V_FULL, V_NEED_DLL, V_FORCE, V_XEMFG):
+        game.reason += ("；主程序静态导入里只有 d3d11.dll：插件只支持 D3D12 / Vulkan，"
+                        "若进游戏面板没反应，多半就是 D3D11（请用 Lossless Scaling 这类）")
 
 
 # --------------------------------------------------------------------------
